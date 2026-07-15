@@ -113,7 +113,7 @@ export async function getActiveFramework(coachId: string): Promise<{
     .from('performance_frameworks')
     .select('id, coach_id, status')
     .eq('coach_id', coachId)
-    .eq('status', 'Active')
+    .eq('status', 'ACTIVE')
     .maybeSingle();
 
   if (fwError) {
@@ -305,4 +305,32 @@ export async function fetchPlayerDashboardData(userId: string) {
   }
 
   return { brmAssignment: brmData, sessions: sessionsData || [], boundaryConfig };
+}
+
+export async function startSession(playerId: string, contractId: string) {
+  const { data, error } = await supabase
+    .from('sessions')
+    .insert({
+      player_id: playerId,
+      contract_id: contractId,
+      status: 'ACTIVE',
+      start_time: new Date().toISOString(),
+    })
+    .select('id, contract_id, start_time, status')
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchActiveSession(playerId: string) {
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('id, contract_id, start_time, status')
+    .eq('player_id', playerId)
+    .eq('status', 'ACTIVE')
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
 }

@@ -28,14 +28,17 @@ export interface UserProfile {
   email: string;
 }
 
+
 export interface ActiveSession {
+  id: string | null;           // sessions.id — needed by TournamentLog
+  contractId: string | null;   // sessions.contract_id
   isActive: boolean;
   startTime: string | null;
   sessionLimit: number;
   dayLimit: number;
   weekLimit: number;
-  stopLossConsumed: number; // in dollars
-  confidenceScore: number; // percentage
+  stopLossConsumed: number;
+  confidenceScore: number;
 }
 
 // Supabase Database Schemas as specified in the guidelines
@@ -124,8 +127,85 @@ export interface WeeklyBRMAssignment {
   session_stop_loss_snapshot: number;
   day_stop_loss_snapshot: number;
   locked_at: string;
+  poker_week_id: string
   brm_levels?: {
     level_index: number;
+    
   };
+}
+
+// --- append to src/types.ts ---
+
+export type WGPStatus = 'DRAFT' | 'LOCKED'; // ⚠️ verify against your actual enum labels
+
+export interface PokerWeek {
+  id: string;
+  player_id: string;
+  start_timestamp: string;
+  end_timestamp: string;
+  is_finalized: boolean;
+  boundary_config_id: string | null;
+  player_timezone_snapshot: string;
+}
+
+export interface WeeklyGamePlan {
+  id: string;
+  player_id: string;
+  poker_week_id: string;
+  framework_version_id: string | null;
+  brm_assignment_id: string | null;
+  status: WGPStatus;
+  weekly_intention: string | null;
+  weekly_focus: string | null;
+  created_at: string;
+  locked_at: string | null;
+}
+
+export interface WeeklyGamePlanPlayingDay {
+  id: string;
+  weekly_game_plan_id: string;
+  planned_date: string;
+  planned_session_allocation: number;
+}
+
+export interface WeeklyGamePlanTournament {
+  id: string;
+  weekly_game_plan_id: string;
+  slot_number: number;
+  tournament_name: string;
+  permitted_buy_ins: number;
+  intended_buy_ins: number;
+  planned_date: string | null;
+  created_at: string;
+}
+
+export interface WeeklyGamePlanConditionalTournament {
+  id: string;
+  weekly_game_plan_id: string;
+  tournament_name: string;
+  activation_condition: string;
+  permitted_buy_ins: number;
+  created_at: string;
+}
+
+export interface WeeklyGamePlanCommitment {
+  id: string;
+  weekly_game_plan_id: string;
+  commitment_text: string;
+  created_at: string;
+}
+
+export interface WeeklyGamePlanAmendment {
+  id: string;
+  weekly_game_plan_id: string;
+  player_id: string;
+  amendment_type: string;
+  original_reference: unknown;
+  proposed_new_value: unknown;
+  reason: string;
+  validation_result: unknown;
+  is_violation: boolean;
+  related_execution_action_id: string | null;
+  created_at: string;
 }
 

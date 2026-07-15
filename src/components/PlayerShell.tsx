@@ -3,7 +3,6 @@ import { PlayerRoute, UserRole, ActiveSession } from '../types';
 import ActiveFrameworkView from './ActiveFrameworkView';
 import ActiveBRMView from './ActiveBRMView';
 import { PlayerDashboard } from './PlayerDashboard';
-import { fetchLatestBRMAssignment } from '../lib/supabase';
 import {
   LayoutDashboard,
   Sparkles,
@@ -23,6 +22,11 @@ import {
   ExternalLink,
   DollarSign
 } from 'lucide-react';
+import WeeklyGamePlanView from './WeeklyGamePlanView';
+import SessionContractView from './SessionContractView';
+import TournamentLog from './TournamentLog';
+import { fetchLatestBRMAssignment, startSession, fetchActiveSession } from '../lib/supabase';
+
 
 interface PlayerShellProps {
   userId: string;
@@ -42,6 +46,8 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
   
   // Active Session state
   const [session, setSession] = useState<ActiveSession>({
+    id: null,
+    contractId: null,
     isActive: false,
     startTime: null,
     sessionLimit: 0,
@@ -66,13 +72,10 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
       .catch(console.error);
   }, [userId]);
 
-  const handleStartSession = () => {
-    setSession((prev) => ({
-      ...prev,
-      isActive: true,
-      startTime: new Date().toISOString(),
-    }));
+  const handleSessionStarted = (sessionId: string) => {
+    setSession((prev) => ({...prev, id: sessionId, isActive: true, startTime: new Date().toISOString() }));
   };
+
 
   const handleStopSession = () => {
     setSession((prev) => ({
@@ -370,69 +373,25 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
               </div>
             )}
 
-            {activeTab === 'plan' && (
-              <div className="flex flex-col gap-6">
-                <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                  <span className="text-12 font-mono text-text-muted uppercase">Tactical Focus for Week 28</span>
-                  <div className="flex flex-col gap-3">
-                    <div className="p-4 bg-surface-raised rounded border border-border flex flex-col gap-1">
-                      <span className="text-14 font-medium text-text-primary">Primary Leak Focus</span>
-                      <p className="text-12 text-text-muted">Over-bluffing river runouts when flush draws miss.</p>
-                    </div>
-                    <div className="p-4 bg-surface-raised rounded border border-border flex flex-col gap-1">
-                      <span className="text-14 font-medium text-text-primary">Tactical Solution</span>
-                      <p className="text-12 text-text-muted">Strict adherence to MDF calculators on pairing cards.</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <h3 className="text-12 font-mono text-text-muted uppercase tracking-wider">Active BRM & Exposure Safeguards</h3>
-                  <ActiveBRMView userId={userId} role="PLAYER" />
-                </div>
-              </div>
-            )}
+            {activeTab === 'plan' && <WeeklyGamePlanView userId={userId} />}
 
             {activeTab === 'play' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <div className="flex justify-between items-center border-b border-border pb-3">
-                  <span className="text-12 font-mono text-text-muted uppercase">Session Contract Rules</span>
-                  <span className="text-12 font-mono text-text-primary bg-surface-raised border border-border px-2 py-0.5 rounded">
-                    Status: {session.isActive ? 'IN SESSION' : 'OFFLINE'}
-                  </span>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-surface-raised rounded border border-border flex flex-col gap-1">
-                    <span className="text-12 text-text-muted font-mono">SESSION STOP LOSS</span>
-                    <span className="font-mono text-20 text-text-primary">$500.00</span>
-                  </div>
-                  <div className="p-4 bg-surface-raised rounded border border-border flex flex-col gap-1">
-                    <span className="text-12 text-text-muted font-mono">PRE-DECIDED HAND LIMIT</span>
-                    <span className="font-mono text-20 text-text-primary">1,200 Hands</span>
-                  </div>
-                </div>
-
-                {!session.isActive ? (
-                  <button
-                    type="button"
-                    onClick={handleStartSession}
-                    className="w-full py-3 bg-accent-steel text-text-primary rounded-[4px] hover:bg-accent-steel/90 text-14 font-medium cursor-pointer transition-colors text-center"
-                  >
-                    Agree and Boot Session Contract
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleStopSession}
-                    className="w-full py-3 bg-signal-risk text-text-primary rounded-[4px] hover:bg-signal-risk/90 text-14 font-medium cursor-pointer transition-colors text-center"
-                  >
-                    Terminate Contract & Log Off
-                  </button>
-                )}
-              </div>
+                <SessionContractView
+                  userId={userId}
+                  onSessionStarted={(sessionId) => {
+                    // e.g. setSession(prev => ({ ...prev, isActive: true, startTime: new Date().toISOString() }))
+                    console.log('Session started:', sessionId);
+                  }}
+                />
             )}
 
+{activeTab === 'play' && (
+  session.isActive && session.id ? (
+    <TournamentLog sessionId={session.id} />
+  ) : (
+    <SessionContractView userId={userId} onSessionStarted={handleSessionStarted} />
+  )
+)}
             {activeTab === 'log' && (
               <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
                 <span className="text-12 font-mono text-text-muted uppercase">Past 30 Days Play Session Register</span>

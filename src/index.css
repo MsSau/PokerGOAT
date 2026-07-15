@@ -89,3 +89,16 @@ body {
   line-height: 1.15;
   letter-spacing: -0.03em;
 }
+
+.input {
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent-steel);
+}
