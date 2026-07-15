@@ -1,0 +1,6 @@
+{
+  "name": "PokerGOAT",
+  "description": "Personal statistics tracking and bankroll management app for players and coaches.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

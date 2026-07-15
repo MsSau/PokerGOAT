@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+:root {
+  --ink: #0A1420;
+  --surface: #121F2E;
+  --surface-raised: #182634;
+  --border: #223244;
+  --text-primary: #E7EEF5;
+  --text-muted: #7C8898;
+  --text-faint: #3A4656;
+  --accent-steel: #5B7A99;
+  --accent-bronze: #9C7A4A;
+  --signal-risk: #B85C4A;
+  --signal-process: #7A9B7E;
+  --signal-caution: #C4A050;
+}
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent-steel: var(--accent-steel);
+  --color-accent-bronze: var(--accent-bronze);
+  --color-signal-risk: var(--signal-risk);
+  --color-signal-process: var(--signal-process);
+  --color-signal-caution: var(--signal-caution);
+}
+
+/* Base resets & styles using design tokens */
+body {
+  background-color: var(--ink);
+  color: var(--text-primary);
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--ink);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+/* Precision typescale helpers to enforce 12/14/16/20/28/40 typescale */
+.text-12 {
+  font-size: 12px;
+  line-height: 1.33;
+}
+.text-14 {
+  font-size: 14px;
+  line-height: 1.43;
+}
+.text-16 {
+  font-size: 16px;
+  line-height: 1.5;
+}
+.text-20 {
+  font-size: 20px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.text-28 {
+  font-size: 28px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+.text-40 {
+  font-size: 40px;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
