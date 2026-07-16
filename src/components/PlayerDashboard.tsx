@@ -82,9 +82,9 @@ export function PlayerDashboard({ userId }: { userId: string }) {
                 
                 const getMedalDisplay = (medal: string) => {
                   switch (medal) {
-                    case 'Gold': return { className: 'text-yellow-600', text: 'GOLD' };
-                    case 'Silver': return { className: 'text-gray-400', text: 'SLVR' };
-                    case 'Bronze': return { className: 'text-orange-700', text: 'BRNZ' };
+                    case 'GOLD': return { className: 'text-accent-bronze', text: 'GOLD' };
+                    case 'SILVER': return { className: 'text-accent-bronze', text: 'SILVER' };
+                    case 'BRONZE': return { className: 'text-accent-bronze', text: 'BRONZE' };
                     default: return { className: 'text-text-faint', text: 'NONE' };
                   }
                 };

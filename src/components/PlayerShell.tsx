@@ -25,7 +25,10 @@ import {
 import WeeklyGamePlanView from './WeeklyGamePlanView';
 import SessionContractView from './SessionContractView';
 import TournamentLog from './TournamentLog';
-import { fetchLatestBRMAssignment, startSession, fetchActiveSession } from '../lib/supabase';
+import { fetchLatestBRMAssignment, startSession, fetchActiveSession, supabase } from '../lib/supabase';
+import SessionReview from './SessionReview';
+import { stopSessionForReview } from '../lib/endSession';
+import SessionLog from './SessionLog';
 
 
 interface PlayerShellProps {
@@ -43,47 +46,124 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
   // Simulation States (to show interactive badges / active session behavior)
   const [hasIntervention, setHasIntervention] = useState(true);
   const [hasPendingAction, setHasPendingAction] = useState(true);
-  
+  const [sessionLoading, setSessionLoading] = useState(true);
+
   // Active Session state
-  const [session, setSession] = useState<ActiveSession>({
-    id: null,
-    contractId: null,
-    isActive: false,
-    startTime: null,
-    sessionLimit: 0,
-    dayLimit: 0,
-    weekLimit: 0,
-    stopLossConsumed: 0, // Initial state: $0 out of $0
-    confidenceScore: 85,
-  });
+const [session, setSession] = useState<ActiveSession>({
+  id: null,
+  contractId: null,
+  isActive: false,
+  status: 'NONE', // ← add
+  startTime: null,
+  sessionLimit: 0,
+  dayLimit: 0,
+  weekLimit: 0,
+  stopLossConsumed: 0,
+  confidenceScore: 85,
+});
 
-  useEffect(() => {
-    fetchLatestBRMAssignment(userId)
-      .then((data) => {
-        if (data) {
-          setSession((prev) => ({
-            ...prev,
-            sessionLimit: data.session_stop_loss_snapshot || 0,
-            dayLimit: data.day_stop_loss_snapshot || 0,
-            weekLimit: data.week_stop_loss_snapshot || 0,
-          }));
-        }
-      })
-      .catch(console.error);
-  }, [userId]);
+useEffect(() => {
+  fetchLatestBRMAssignment(userId)
+    .then((data) => {
+      if (data) {
+        setSession((prev) => ({
+          ...prev,
+          sessionLimit: data.session_stop_loss_snapshot || 0,
+          dayLimit: data.day_stop_loss_snapshot || 0,
+          weekLimit: data.week_stop_loss_snapshot || 0,
+        }));
+      }
+    })
+    .catch(console.error);
+}, [userId]);
 
-  const handleSessionStarted = (sessionId: string) => {
-    setSession((prev) => ({...prev, id: sessionId, isActive: true, startTime: new Date().toISOString() }));
-  };
+useEffect(() => {
+  let cancelled = false;
+  async function hydrateSession() {
+    setSessionLoading(true);
+    try {
+      // ACTIVE session takes priority
+      const active = await fetchActiveSession(userId);
+      if (active && !cancelled) {
+        setSession((prev) => ({
+          ...prev,
+          id: active.id,
+          contractId: active.contract_id,
+          isActive: true,
+          status: 'ACTIVE',
+          startTime: active.start_time,
+        }));
+        return;
+      }
+
+      // Otherwise check for a session stuck in REVIEW_PENDING
+      const { data: pending, error } = await supabase
+        .from('sessions')
+        .select('id, contract_id, start_time, status')
+        .eq('player_id', userId)
+        .eq('status', 'REVIEW_PENDING')
+        .order('start_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (pending && !cancelled) {
+        setSession((prev) => ({
+          ...prev,
+          id: pending.id,
+          contractId: pending.contract_id,
+          isActive: false,
+          status: 'REVIEW_PENDING',
+          startTime: pending.start_time,
+        }));
+      }
+    } catch (err) {
+      //console.error('Failed to hydrate session state:', err);
+      console.error("HYDRATE ERROR");
+console.error(err);
+console.error(JSON.stringify(err, null, 2));
+    } finally {
+      if (!cancelled) setSessionLoading(false);
+    }
+  }
+  hydrateSession();
+  return () => { cancelled = true; };
+}, [userId]);
+
+const handleSessionStarted = (sessionId: string) => {
+  setSession((prev) => ({ ...prev, id: sessionId, isActive: true, status: 'ACTIVE', startTime: new Date().toISOString() }));
+};
+
+// Step 1 of 2 — stops the clock only. No scoring happens here.
+const handleEndSessionClicked = async () => {
+  if (!session.id) return;
+  try {
+    await stopSessionForReview(session.id);
+    setSession((prev) => ({ ...prev, status: 'REVIEW_PENDING' }));
+  } catch (err) {
+    console.error('Failed to stop session:', err);
+  }
+};
+
+// Step 2 of 2 — review submitted, perform_end_session already ran and the
+// session is now FINALIZED server-side.
+const handleReviewComplete = () => {
+  setSession((prev) => ({ ...prev, isActive: false, status: 'FINALIZED', startTime: null }));
+  setActiveTab('dashboard'); // per §2.1 CTA state machine, land back on the dashboard
+};
+  
+
+  //const handleSessionStarted = (sessionId: string) => {
+    //setSession((prev) => ({...prev, id: sessionId, isActive: true, startTime: new Date().toISOString() }));
+  //};
 
 
-  const handleStopSession = () => {
-    setSession((prev) => ({
-      ...prev,
-      isActive: false,
-      startTime: null,
-    }));
-  };
+  //const handleStopSession = () => {
+    //setSession((prev) => ({
+      //...prev,
+      //isActive: false,
+      //startTime: null,
+    //}));
+  //};
 
   // Navigation Items
   const navItems = [
@@ -376,53 +456,20 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
             {activeTab === 'plan' && <WeeklyGamePlanView userId={userId} />}
 
             {activeTab === 'play' && (
-                <SessionContractView
-                  userId={userId}
-                  onSessionStarted={(sessionId) => {
-                    // e.g. setSession(prev => ({ ...prev, isActive: true, startTime: new Date().toISOString() }))
-                    console.log('Session started:', sessionId);
-                  }}
-                />
+              <>
+                {session.status === 'ACTIVE' && session.id && (
+                  <TournamentLog sessionId={session.id} onEndSession={handleEndSessionClicked} />
+                )}
+                {session.status === 'REVIEW_PENDING' && session.id && (
+                  <SessionReview sessionId={session.id} playerId={userId} onComplete={handleReviewComplete} />
+                )}
+                {(session.status === 'NONE' || session.status === 'FINALIZED') && (
+                  <SessionContractView userId={userId} onSessionStarted={handleSessionStarted} />
+                )}
+              </>
             )}
 
-{activeTab === 'play' && (
-  session.isActive && session.id ? (
-    <TournamentLog sessionId={session.id} />
-  ) : (
-    <SessionContractView userId={userId} onSessionStarted={handleSessionStarted} />
-  )
-)}
-            {activeTab === 'log' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Past 30 Days Play Session Register</span>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-border bg-surface-raised text-12 font-mono text-text-muted">
-                        <th className="p-3">DATE</th>
-                        <th className="p-3">HANDS</th>
-                        <th className="p-3">P&L (NEUTRAL COLORED)</th>
-                        <th className="p-3">DISCIPLINE SCORE</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-12 font-sans">
-                      <tr className="border-b border-border/50 hover:bg-surface-raised/30">
-                        <td className="p-3 font-mono">2026-07-12</td>
-                        <td className="p-3 font-mono">820</td>
-                        <td className="p-3 font-mono text-text-primary">$1,240.00</td>
-                        <td className="p-3 text-signal-process font-mono">98%</td>
-                      </tr>
-                      <tr className="border-b border-border/50 hover:bg-surface-raised/30">
-                        <td className="p-3 font-mono">2026-07-10</td>
-                        <td className="p-3 font-mono">450</td>
-                        <td className="p-3 font-mono text-text-primary">-$340.00</td>
-                        <td className="p-3 text-signal-caution font-mono">85%</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+            {activeTab === 'log' && <SessionLog userId={userId} />}
 
             {activeTab === 'progress' && (
               <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-6">

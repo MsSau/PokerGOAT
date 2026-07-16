@@ -179,7 +179,7 @@ async function fetchActiveFrameworkVersionId(coachId: string): Promise<string | 
     .from('performance_frameworks')
     .select('id')
     .eq('coach_id', coachId)
-    .eq('status', 'Active')
+    .eq('status', 'ACTIVE')
     .maybeSingle();
   if (!fw) return null;
 
@@ -283,23 +283,67 @@ export async function computeCapacity(
 // buy-ins) are pulled through verbatim, never freely retyped.
 // ============================================================================
 
+//export async function fetchExistingContractForSession(
+  //playerId: string,
+  //weeklyGamePlanId: string
+//): Promise<SessionContractRow | null> {
+  //const { data, error } = await supabase
+    //.from('session_contracts')
+    //.select('*')
+    //.eq('player_id', playerId)
+    //.eq('weekly_game_plan_id', weeklyGamePlanId)
+    //.in('status', ['VALIDATED', 'LOCKED'])
+    //.order('id', { ascending: false })
+    //.limit(1)
+    //.maybeSingle();
+  //if (error) throw error;
+  //return data;
+//}
 export async function fetchExistingContractForSession(
   playerId: string,
   weeklyGamePlanId: string
 ): Promise<SessionContractRow | null> {
-  const { data, error } = await supabase
+
+  // STEP 1: Check if an ACTIVE session exists
+  const { data: activeSession, error: sessionError } = await supabase
+    .from('sessions')
+    .select('contract_id')
+    .eq('player_id', playerId)
+    .eq('status', 'ACTIVE')
+    .order('start_time', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (sessionError) throw sessionError;
+
+  // STEP 2: If ACTIVE session exists, return its LOCKED contract
+  if (activeSession?.contract_id) {
+    const { data: lockedContract, error: contractError } = await supabase
+      .from('session_contracts')
+      .select('*')
+      .eq('id', activeSession.contract_id)
+      .maybeSingle();
+
+    if (contractError) throw contractError;
+
+    return lockedContract;
+  }
+
+  // STEP 3: No ACTIVE session -> return only VALIDATED contract
+  const { data: validatedContract, error: validatedError } = await supabase
     .from('session_contracts')
     .select('*')
     .eq('player_id', playerId)
     .eq('weekly_game_plan_id', weeklyGamePlanId)
-    .in('status', ['VALIDATED', 'LOCKED'])
+    .eq('status', 'VALIDATED')
     .order('id', { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error) throw error;
-  return data;
-}
 
+  if (validatedError) throw validatedError;
+
+  return validatedContract;
+}
 export async function createValidatedSessionContract(params: {
   playerId: string;
   coachId: string;

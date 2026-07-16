@@ -18,6 +18,9 @@ export interface SlotRule {
     2: [
       { slotNumber: 1, maxBuyIns: 2 },
       { slotNumber: 2, maxBuyIns: 1 },
+      { slotNumber: 3, maxBuyIns: 2 },
+      { slotNumber: 4, maxBuyIns: 2 },
+      { slotNumber: 5, maxBuyIns: 2 },
     ],
     3: [
       { slotNumber: 1, maxBuyIns: 2 },

@@ -33,6 +33,7 @@ export interface ActiveSession {
   id: string | null;           // sessions.id — needed by TournamentLog
   contractId: string | null;   // sessions.contract_id
   isActive: boolean;
+  status: 'NONE' | 'ACTIVE' | 'REVIEW_PENDING' | 'FINALIZED';
   startTime: string | null;
   sessionLimit: number;
   dayLimit: number;
@@ -45,7 +46,7 @@ export interface ActiveSession {
 export interface PerformanceFramework {
   id: string;
   coach_id: string;
-  status: 'Active' | 'Inactive' | string;
+  status: 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 }
 
 export interface FrameworkVersion {
@@ -95,7 +96,7 @@ export interface Session {
   id: string;
   player_id: string;
   contract_id?: string;
-  status: 'ACTIVE' | 'ENDED' | string;
+  status: 'ACTIVE' | 'REVIEW_PENDING' | 'FINALIZED';
   start_time: string;
   end_time?: string;
 }
@@ -122,12 +123,12 @@ export interface OutcomeAssessment {
 export interface WeeklyBRMAssignment {
   id: string;
   player_id: string;
+  poker_week_id: string
   brm_level_id: string;
   week_stop_loss_snapshot: number;
   session_stop_loss_snapshot: number;
   day_stop_loss_snapshot: number;
-  locked_at: string;
-  poker_week_id: string
+  locked_at: string;  
   brm_levels?: {
     level_index: number;
     

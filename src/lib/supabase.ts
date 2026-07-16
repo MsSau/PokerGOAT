@@ -236,7 +236,8 @@ export async function fetchLatestBRMAssignment(userId: string) {
     .from('weekly_brm_assignments')
     .select(`
       id, 
-      player_id, 
+      player_id,
+      poker_week_id, 
       brm_level_id, 
       week_stop_loss_snapshot,
       session_stop_loss_snapshot,
@@ -271,6 +272,7 @@ export async function fetchPlayerDashboardData(userId: string) {
     .select(`
       id, 
       player_id, 
+      poker_week_id,
       brm_level_id, 
       week_stop_loss_snapshot,
       session_stop_loss_snapshot,
@@ -288,6 +290,18 @@ export async function fetchPlayerDashboardData(userId: string) {
   if (brmError) {
     throw brmError;
   }
+  // Supabase always returns joined foreign tables as arrays, even for a
+  // to-one relationship (brm_level_id -> brm_levels.id). Flatten here so
+  // the shape matches WeeklyBRMAssignment.brm_levels ({ level_index } object,
+  // not an array) for every consumer of this function.
+  const normalizedBrmData = brmData
+    ? {
+        ...brmData,
+        brm_levels: Array.isArray(brmData.brm_levels)
+          ? brmData.brm_levels[0] ?? null
+          : brmData.brm_levels,
+      }
+    : null;
 
   // 4. Fetch last 10 sessions with verdicts/assessments
   const { data: sessionsData, error: sessionsError } = await supabase
@@ -297,14 +311,11 @@ export async function fetchPlayerDashboardData(userId: string) {
     .order('start_time', { ascending: false })
     .limit(10);
 
-  console.log('Raw returned rows for sessions:', sessionsData);
-  console.log('Full sessions query error object:', sessionsError);
-
   if (sessionsError) {
     throw sessionsError;
   }
 
-  return { brmAssignment: brmData, sessions: sessionsData || [], boundaryConfig };
+  return { brmAssignment: normalizedBrmData, sessions: sessionsData || [], boundaryConfig };
 }
 
 export async function startSession(playerId: string, contractId: string) {
@@ -329,8 +340,12 @@ export async function fetchActiveSession(playerId: string) {
     .select('id, contract_id, start_time, status')
     .eq('player_id', playerId)
     .eq('status', 'ACTIVE')
-    .maybeSingle();
+    .limit(1);
 
   if (error) throw error;
-  return data;
+  return data?.[0] ?? null;
+     // .maybeSingle();
+
+     //if (error) throw error;
+    //return data;
 }

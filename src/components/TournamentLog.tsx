@@ -12,6 +12,7 @@ import { formatCurrency } from '../lib/utils';
 
 interface TournamentLogProps {
   sessionId: string;
+  onEndSession: () => void;
 }
 
 type FormMode = null | { type: 'new' } | { type: 'reentry'; tournamentId: string; tournamentName: string } | { type: 'finalize'; tournament: TournamentRow };
@@ -44,13 +45,18 @@ function EntryFlagBadge({ status }: { status: string }) {
   );
 }
 
-export default function TournamentLog({ sessionId }: TournamentLogProps) {
+export default function TournamentLog({ sessionId, onEndSession }: TournamentLogProps) {
   const [tournaments, setTournaments] = useState<TournamentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [formMode, setFormMode] = useState<FormMode>(null);
   const [saving, setSaving] = useState(false);
   const [lastFlags, setLastFlags] = useState<ComplianceFlags | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [endingSession, setEndingSession] = useState(false);
+
+  const handleEndSessionClick = () => {
+    setEndingSession(true); // opens a confirm step, not an immediate call
+  };
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -83,6 +89,13 @@ export default function TournamentLog({ sessionId }: TournamentLogProps) {
         >
           <RefreshCcw size={14} />
         </button>
+        <button
+            type="button"
+            onClick={handleEndSessionClick}
+            className="text-12 font-mono px-3 py-1.5 rounded-[4px] border border-signal-risk/40 text-signal-risk hover:bg-signal-risk/10 transition-colors"
+          >
+            End Session
+          </button>
       </div>
 
       {error && (
@@ -222,6 +235,14 @@ export default function TournamentLog({ sessionId }: TournamentLogProps) {
           </button>
         </div>
       )}
+
+        {endingSession && (
+                <EndSessionConfirm
+                  unfinalizedCount={tournaments.filter((t) => t.net_return === null).length}
+                  onCancel={() => setEndingSession(false)}
+                  onConfirm={onEndSession}
+                />
+        )}
     </div>
   );
 }
@@ -413,5 +434,41 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="text-12 font-mono text-text-muted uppercase tracking-wider">{label}</span>
       {children}
     </label>
+  );
+}
+
+
+// Confirm step — a live session shouldn't stop with one accidental tap,
+// and it should tell the player if entries are still open (they can still
+// finalize those during the review flow, so this is informational, not a
+// gate — truthful logging is never blocked, §5).
+function EndSessionConfirm({
+  unfinalizedCount,
+  onCancel,
+  onConfirm,
+}: {
+  unfinalizedCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink/60" onClick={onCancel}>
+      <div className="w-full max-w-sm bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+        <span className="text-16 font-display text-text-primary">End this session?</span>
+        <p className="text-13 text-text-muted leading-relaxed">
+          {unfinalizedCount > 0
+            ? `${unfinalizedCount} tournament(s) are still open. You'll finalize them in the review that follows.`
+            : 'All tournaments are finalized. You\'ll move straight to the post-session review.'}
+        </p>
+        <div className="flex gap-3">
+          <button type="button" onClick={onCancel} className="flex-1 h-10 border border-border rounded-[4px] text-13 text-text-muted">
+            Cancel
+          </button>
+          <button type="button" onClick={onConfirm} className="flex-1 h-10 bg-signal-risk text-text-primary rounded-[4px] text-13 font-medium">
+            End Session
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
