@@ -1,4 +1,6 @@
-export type OutcomeMedal = 'Gold' | 'Silver' | 'Bronze' | 'None';
+import { Database } from '../types/database';
+
+export type OutcomeMedal = Database['public']['Enums']['medal_type'];
 
 export function computeOutcomeMedal(params: {
   brmCompliant: boolean;
@@ -9,8 +11,8 @@ export function computeOutcomeMedal(params: {
 }): OutcomeMedal {
   const positive = params.finalPnl > 0;
   // "No Medal" if not positive OR hard-gate — evaluated before anything else (§8).
-  if (params.hardGateViolation || !positive || !params.brmCompliant) return 'None';
-  if (params.hadFinalTable) return 'Gold';
-  if (params.itmRate >= 0.5) return 'Silver';
-  return 'Bronze';
+  if (params.hardGateViolation || !positive || !params.brmCompliant) return 'NONE';
+  if (params.hadFinalTable) return 'GOLD';
+  if (params.itmRate >= 0.5) return 'SILVER';
+  return 'BRONZE';
 }

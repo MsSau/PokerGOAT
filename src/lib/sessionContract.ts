@@ -1,70 +1,70 @@
 import { supabase } from './supabase';
+import { Database } from '../types/database';
+
+export type SessionContractSubstitutionRow = Database['public']['Tables']['session_contract_substitutions']['Row'];
+export type SessionContractTournamentRow = Database['public']['Tables']['session_contract_tournaments']['Row'];
 
 // ============================================================================
 // TYPES
+// Narrow Pick<> types below match the exact column list each fetcher below
+// actually selects — never a full Row for a query that doesn't select every
+// column. The corresponding *full*-row shape (used by weeklyGamePlan.ts's
+// resolveWGPContext/fetchExistingWGP, which do select('*')) lives in
+// src/types.ts as PokerWeek/WeeklyGamePlan/WeeklyGamePlanTournament/
+// WeeklyGamePlanConditionalTournament — same table, deliberately different
+// (wider) shape, so don't conflate the two.
 // ============================================================================
 
-export interface PokerWeek {
-  id: string;
-  player_id: string;
-  start_timestamp: string;
-  end_timestamp: string;
-  boundary_config_id: string | null;
-}
+export type PokerWeekSummary = Pick<
+  Database['public']['Tables']['poker_weeks']['Row'],
+  'id' | 'player_id' | 'start_timestamp' | 'end_timestamp' | 'boundary_config_id'
+>;
 
-export interface WeeklyGamePlan {
-  id: string;
-  player_id: string;
-  poker_week_id: string;
-  framework_version_id: string | null;
-  brm_assignment_id: string | null;
-  status: 'DRAFT' | 'LOCKED';
-  locked_at: string | null;
-}
+export type WeeklyGamePlanSummary = Pick<
+  Database['public']['Tables']['weekly_game_plans']['Row'],
+  'id' | 'player_id' | 'poker_week_id' | 'framework_version_id' | 'brm_assignment_id' | 'status' | 'locked_at' | 'weekly_intention' | 'weekly_focus'
+>;
 
-export interface WGPTournamentSlot {
-  id: string;
-  weekly_game_plan_id: string;
-  slot_number: number;
-  tournament_name: string;
-  permitted_buy_ins: number;
-  intended_buy_ins: number;
-  planned_date: string | null;
-}
+export type WGPTournamentSlot = Pick<
+  Database['public']['Tables']['weekly_game_plan_tournaments']['Row'],
+  'id' | 'weekly_game_plan_id' | 'slot_number' | 'tournament_name' | 'permitted_buy_ins' | 'intended_buy_ins' | 'planned_date'
+>;
 
-export interface WGPConditionalTournament {
-  id: string;
-  weekly_game_plan_id: string;
-  tournament_name: string;
-  permitted_buy_ins: number;
-  activation_condition: string;
-}
+export type WGPConditionalTournament = Pick<
+  Database['public']['Tables']['weekly_game_plan_conditional_tournaments']['Row'],
+  'id' | 'weekly_game_plan_id' | 'tournament_name' | 'permitted_buy_ins' | 'activation_condition'
+>;
 
-export interface WeeklyBRMAssignment {
-  id: string;
-  player_id: string;
-  poker_week_id: string;
-  brm_level_id: string;
-  session_stop_loss_snapshot: number;
-  day_stop_loss_snapshot: number;
-  week_stop_loss_snapshot: number;
-  locked_at: string | null;
-}
+export type WeeklyBRMAssignmentRow = Database['public']['Tables']['weekly_brm_assignments']['Row'];
 
-export interface SessionContractRow {
-  id: string;
-  player_id: string;
-  weekly_game_plan_id: string;
-  brm_assignment_id: string;
-  framework_version_id: string;
-  session_stop_loss: number;
-  effective_session_loss_limit_at_creation: number;
-  remaining_day_capacity_snapshot: number;
-  remaining_week_capacity_snapshot: number;
-  status: 'DRAFT' | 'VALIDATED' | 'LOCKED';
-  locked_at: string | null;
-  session_intention: string | null;
-}
+// Matches the narrow column list actually used by fetchWeeklyBRMAssignment,
+// fetchLatestBRMAssignment, and fetchPlayerDashboardData — NOT the full Row,
+// since none of those queries select the bankroll-audit columns
+// (bankroll_balance_at_assignment, bankroll_band_id, brm_config_version_id,
+// opening_capital_at_assignment). Those columns exist to satisfy PRD §4's
+// "assigned using the bankroll state at that boundary" / "historical sessions
+// retain the BRM configuration version" requirements, but nothing in this
+// codebase writes or reads them yet outside perform_end_session() — see
+// resolveWGPContext below for the one call site that does select('*').
+export type WeeklyBRMAssignmentSummary = Pick<WeeklyBRMAssignmentRow,
+  'id' | 'player_id' | 'poker_week_id' | 'brm_level_id' |
+  'session_stop_loss_snapshot' | 'day_stop_loss_snapshot' | 'week_stop_loss_snapshot' | 'locked_at'
+>;
+
+// fetchPlayerDashboardData additionally joins brm_levels!inner(level_index).
+// weekly_brm_assignments -> brm_levels is isOneToOne: false, so the raw
+// embedded relation type-resolves to an array even though each assignment
+// has exactly one level; fetchPlayerDashboardData flattens it before
+// returning, so this describes that flattened, nullable-object output —
+// never the raw pre-flatten query shape.
+export type WeeklyBRMAssignmentWithLevel = WeeklyBRMAssignmentSummary & {
+  brm_levels: { level_index: number } | null;
+};
+
+// Full row (every consumer below does select('*')) — remaining_day/week_
+// capacity_snapshot are genuinely nullable in the DB (a DRAFT contract has
+// never had capacity computed yet), so callers must guard before formatting.
+export type SessionContractRow = Database['public']['Tables']['session_contracts']['Row'];
 
 export interface CapacityState {
   remainingDayCapacity: number;
@@ -77,7 +77,7 @@ export interface CapacityState {
 // POKER WEEK / DAY RESOLUTION
 // ============================================================================
 
-export async function fetchCurrentPokerWeek(playerId: string): Promise<PokerWeek | null> {
+export async function fetchCurrentPokerWeek(playerId: string): Promise<PokerWeekSummary | null> {
   const nowIso = new Date().toISOString();
   const { data, error } = await supabase
     .from('poker_weeks')
@@ -94,7 +94,7 @@ export async function fetchCurrentPokerWeek(playerId: string): Promise<PokerWeek
 // timezone-aware library keyed off profiles.timezone. Good enough to
 // bound "today" for MVP; swap for date-fns-tz once player timezone
 // handling is centralized.
-async function computeTodayBoundaries(boundaryConfigId: string | null): Promise<{ start: Date; end: Date }> {
+export async function computeTodayBoundaries(boundaryConfigId: string | null): Promise<{ start: Date; end: Date }> {
   let boundaryTime = '10:00:00';
   if (boundaryConfigId) {
     const { data } = await supabase
@@ -120,6 +120,17 @@ async function computeTodayBoundaries(boundaryConfigId: string | null): Promise<
   return { start, end: todayBoundary };
 }
 
+// Local calendar-day key (YYYY-MM-DD) for a Date, matching the
+// weekly_game_plan_tournaments.planned_date convention WeeklyGamePlanView
+// writes (see its getWeekDates: local components, not toISOString(), which
+// rolls the date back a day for any timezone ahead of UTC).
+export function toLocalDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 // ============================================================================
 // LOCKED WEEKLY GAME PLAN + BRM ASSIGNMENT
 // ============================================================================
@@ -128,13 +139,13 @@ export async function fetchLockedWeeklyGamePlan(
   playerId: string,
   pokerWeekId: string
 ): Promise<{
-  plan: WeeklyGamePlan;
+  plan: WeeklyGamePlanSummary;
   tournaments: WGPTournamentSlot[];
   conditionals: WGPConditionalTournament[];
 } | null> {
   const { data: plan, error: planErr } = await supabase
     .from('weekly_game_plans')
-    .select('id, player_id, poker_week_id, framework_version_id, brm_assignment_id, status, locked_at')
+    .select('id, player_id, poker_week_id, framework_version_id, brm_assignment_id, status, locked_at, weekly_intention, weekly_focus')
     .eq('player_id', playerId)
     .eq('poker_week_id', pokerWeekId)
     .eq('status', 'LOCKED')
@@ -162,7 +173,7 @@ export async function fetchLockedWeeklyGamePlan(
 export async function fetchWeeklyBRMAssignment(
   playerId: string,
   pokerWeekId: string
-): Promise<WeeklyBRMAssignment | null> {
+): Promise<WeeklyBRMAssignmentSummary | null> {
   const { data, error } = await supabase
     .from('weekly_brm_assignments')
     .select('id, player_id, poker_week_id, brm_level_id, session_stop_loss_snapshot, day_stop_loss_snapshot, week_stop_loss_snapshot, locked_at')
@@ -203,8 +214,8 @@ async function fetchActiveFrameworkVersionId(coachId: string): Promise<string | 
 
 export async function computeCapacity(
   playerId: string,
-  pokerWeek: PokerWeek,
-  brmAssignment: WeeklyBRMAssignment
+  pokerWeek: PokerWeekSummary,
+  brmAssignment: WeeklyBRMAssignmentSummary
 ): Promise<CapacityState> {
   const { start: dayStart, end: dayEnd } = await computeTodayBoundaries(pokerWeek.boundary_config_id);
 
@@ -216,7 +227,7 @@ export async function computeCapacity(
     .eq('weekly_game_plans.poker_week_id', pokerWeek.id);
   if (cErr) throw cErr;
 
-  const contractIds = (contractsInWeek || []).map((c: any) => c.id);
+  const contractIds = (contractsInWeek || []).map((c) => c.id);
   if (contractIds.length === 0) {
     return {
       remainingDayCapacity: brmAssignment.day_stop_loss_snapshot,
@@ -347,8 +358,8 @@ export async function fetchExistingContractForSession(
 export async function createValidatedSessionContract(params: {
   playerId: string;
   coachId: string;
-  plan: WeeklyGamePlan;
-  brmAssignment: WeeklyBRMAssignment;
+  plan: WeeklyGamePlanSummary;
+  brmAssignment: WeeklyBRMAssignmentSummary;
   capacity: CapacityState;
   selectedSlots: WGPTournamentSlot[];
   selectedConditionals: WGPConditionalTournament[];
@@ -415,38 +426,27 @@ export async function createValidatedSessionContract(params: {
 
 // ============================================================================
 // LOCK CONTRACT + START SESSION — PRD §5 "locks when the session starts"
-// TBD: this should be one atomic Postgres function (mirroring
-// perform_end_session's pattern) rather than two sequential client calls.
-// Left as two calls for MVP; if the second insert fails, the contract is
-// left LOCKED with no session — acceptable for MVP, flagged for hardening.
+// Single atomic write via the perform_start_session RPC (mirrors
+// perform_end_session's pattern in endSession.ts) — the contract lock,
+// authorization check, max-two-sessions-per-poker-day guard, and session
+// insert all happen inside one Postgres transaction, so a failure partway
+// through can never leave the contract LOCKED with no session.
 // ============================================================================
 
 export async function lockContractAndStartSession(params: {
-  playerId: string;
   contractId: string;
-  preparationId?: string | null;
+  preparationId: string;
 }): Promise<{ sessionId: string }> {
-  const { error: lockErr } = await supabase
-    .from('session_contracts')
-    .update({ status: 'LOCKED', locked_at: new Date().toISOString() })
-    .eq('id', params.contractId)
-    .eq('status', 'VALIDATED'); // guard: only a VALIDATED contract can lock
-  if (lockErr) throw lockErr;
+  const { data, error } = await supabase.rpc('perform_start_session', {
+    p_contract_id: params.contractId,
+    p_preparation_id: params.preparationId,
+  });
+  if (error) throw error;
 
-  const { data: session, error: sErr } = await supabase
-    .from('sessions')
-    .insert({
-      player_id: params.playerId,
-      contract_id: params.contractId,
-      preparation_id: params.preparationId ?? null,
-      status: 'ACTIVE',
-      start_time: new Date().toISOString(),
-    })
-    .select('id')
-    .single();
-  if (sErr) throw sErr;
-
-  return { sessionId: session.id };
+  // perform_start_session returns jsonb, so the generated client type can
+  // only say `Json` — cast once, here, to the shape the RPC actually returns.
+  const rpcResult = data as unknown as { session_id: string };
+  return { sessionId: rpcResult.session_id };
 }
 
 // ============================================================================
@@ -454,7 +454,7 @@ export async function lockContractAndStartSession(params: {
 // Original contract stays intact; substitution is appended, never edited in place.
 // ============================================================================
 
-export async function fetchSubstitutions(contractId: string) {
+export async function fetchSubstitutions(contractId: string): Promise<SessionContractSubstitutionRow[]> {
   const { data, error } = await supabase
     .from('session_contract_substitutions')
     .select('*')
@@ -488,7 +488,7 @@ export async function substituteTournament(params: {
   return data;
 }
 
-export async function fetchLockedContractTournaments(contractId: string) {
+export async function fetchLockedContractTournaments(contractId: string): Promise<SessionContractTournamentRow[]> {
   const { data, error } = await supabase
     .from('session_contract_tournaments')
     .select('*')

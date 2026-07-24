@@ -1,25 +1,28 @@
 /// <reference types="vite/client" />
 
 import { createClient } from '@supabase/supabase-js';
-import { 
-  UserRole, 
-  PerformanceFramework, 
-  FrameworkVersion, 
-  BRMConfiguration, 
-  BRMConfigVersion, 
-  BRMBankrollBand, 
-  BRMLevel 
+import { Database } from '../types/database';
+import { computeCapacity, fetchCurrentPokerWeek } from './sessionContract';
+import type { CapacityState, WeeklyBRMAssignmentSummary, WeeklyBRMAssignmentWithLevel } from './sessionContract';
+import {
+  UserRole,
+  PerformanceFramework,
+  FrameworkVersion,
+  BRMConfiguration,
+  BRMConfigVersion,
+  BRMBankrollBand,
+  BRMLevel
 } from '../types';
 
 // Read from env vars with literal hardcoded defaults to guarantee operation in the iframe
-const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://ojbkvxjphzrbteyipkxo.supabase.co';
-const supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_IIZLb8w9-PDp9a8bMxKO7g_AYlHEzkF';
+const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL || 'https://ojbkvxjphzrbteyipkxo.supabase.co';
+const supabaseAnonKey = import.meta.env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_IIZLb8w9-PDp9a8bMxKO7g_AYlHEzkF';
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('Supabase URL or Publishable Key is missing. Ensure env vars are configured.');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -128,7 +131,7 @@ export async function getActiveFramework(coachId: string): Promise<{
   // 3. Fetch framework_version where framework_id = fwData.id AND is_activated = true
   const { data: verData, error: verError } = await supabase
     .from('framework_versions')
-    .select('id, framework_id, version_number, primary_objective, start_date, end_date, is_activated, created_at')
+    .select('id, framework_id, version_number, primary_objective, start_date, end_date, is_activated, created_at, change_reason')
     .eq('framework_id', fwData.id)
     .eq('is_activated', true)
     .maybeSingle();
@@ -143,8 +146,8 @@ export async function getActiveFramework(coachId: string): Promise<{
   }
 
   return {
-    framework: fwData as PerformanceFramework,
-    version: verData as FrameworkVersion,
+    framework: fwData,
+    version: verData,
   };
 }
 
@@ -182,7 +185,7 @@ export async function getActiveBRM(coachId: string): Promise<{
     // 5. Fetch brm_config_versions where config_id = configData.id AND is_activated = true
     const { data: verData, error: verError } = await supabase
       .from('brm_config_versions')
-      .select('id, config_id, version_number, is_activated, created_at')
+      .select('id, config_id, version_number, is_activated, created_at, change_reason')
       .eq('config_id', configData.id)
       .eq('is_activated', true)
       .maybeSingle();
@@ -209,10 +212,10 @@ export async function getActiveBRM(coachId: string): Promise<{
     if (levelsRes.error) throw levelsRes.error;
 
     return {
-      config: configData as BRMConfiguration,
-      version: verData as BRMConfigVersion,
-      bands: (bandsRes.data || []) as BRMBankrollBand[],
-      levels: (levelsRes.data || []) as BRMLevel[],
+      config: configData,
+      version: verData,
+      bands: bandsRes.data || [],
+      levels: levelsRes.data || [],
     };
   } catch (err) {
     console.error('Error fetching BRM configurations:', err);
@@ -231,7 +234,7 @@ export async function fetchPokerWeekBoundaryConfig(coachId: string) {
   return data;
 }
 
-export async function fetchLatestBRMAssignment(userId: string) {
+export async function fetchLatestBRMAssignment(userId: string): Promise<WeeklyBRMAssignmentSummary | null> {
   const { data, error } = await supabase
     .from('weekly_brm_assignments')
     .select(`
@@ -262,6 +265,7 @@ export async function fetchPlayerDashboardData(userId: string) {
     .single();
 
   if (profileError) throw profileError;
+  if (!profile.coach_id) throw new Error('No coach assigned to this player profile.');
 
   // 2. Fetch boundary config
   const boundaryConfig = await fetchPokerWeekBoundaryConfig(profile.coach_id);
@@ -290,11 +294,12 @@ export async function fetchPlayerDashboardData(userId: string) {
   if (brmError) {
     throw brmError;
   }
-  // Supabase always returns joined foreign tables as arrays, even for a
-  // to-one relationship (brm_level_id -> brm_levels.id). Flatten here so
-  // the shape matches WeeklyBRMAssignment.brm_levels ({ level_index } object,
-  // not an array) for every consumer of this function.
-  const normalizedBrmData = brmData
+  // weekly_brm_assignments -> brm_levels is isOneToOne: false, so Supabase
+  // types (and returns) the joined relation as an array even though each
+  // assignment has exactly one level. Flatten here so the shape matches
+  // WeeklyBRMAssignmentWithLevel.brm_levels ({ level_index } | null, not an
+  // array) for every consumer of this function.
+  const normalizedBrmData: WeeklyBRMAssignmentWithLevel | null = brmData
     ? {
         ...brmData,
         brm_levels: Array.isArray(brmData.brm_levels)
@@ -306,7 +311,7 @@ export async function fetchPlayerDashboardData(userId: string) {
   // 4. Fetch last 10 sessions with verdicts/assessments
   const { data: sessionsData, error: sessionsError } = await supabase
     .from('sessions')
-    .select('*, verdicts(*), session_execution_assessments(*), session_outcome_assessments(*)')
+    .select('*, verdicts(*), session_execution_assessments(*), session_outcome_assessments(*), preparation_records(medal_tier)')
     .eq('player_id', userId)
     .order('start_time', { ascending: false })
     .limit(10);
@@ -315,23 +320,24 @@ export async function fetchPlayerDashboardData(userId: string) {
     throw sessionsError;
   }
 
-  return { brmAssignment: normalizedBrmData, sessions: sessionsData || [], boundaryConfig };
-}
+  // 5. Remaining Day/Week capacity (§6) — the assigned snapshot minus realized
+  // losses from FINALIZED sessions so far this Poker Week, same computation
+  // the Session Contract screen uses. Without this, "remaining" would just be
+  // the static assigned limit, never reflecting what's actually been lost.
+  let capacity: CapacityState | null = null;
+  if (normalizedBrmData) {
+    const currentWeek = await fetchCurrentPokerWeek(userId);
+    if (currentWeek) {
+      capacity = await computeCapacity(userId, currentWeek, normalizedBrmData);
+    }
+  }
 
-export async function startSession(playerId: string, contractId: string) {
-  const { data, error } = await supabase
-    .from('sessions')
-    .insert({
-      player_id: playerId,
-      contract_id: contractId,
-      status: 'ACTIVE',
-      start_time: new Date().toISOString(),
-    })
-    .select('id, contract_id, start_time, status')
-    .single();
-
-  if (error) throw error;
-  return data;
+  return {
+    brmAssignment: normalizedBrmData,
+    sessions: sessionsData || [],
+    boundaryConfig,
+    capacity,
+  };
 }
 
 export async function fetchActiveSession(playerId: string) {

@@ -1,42 +1,21 @@
 import { supabase } from './supabase';
+import { Database } from '../types/database';
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-export interface TournamentEntryRow {
-  id: string;
-  tournament_id: string;
-  entry_sequence: number;
-  buy_in_amount: number;
-  investment: number | null;
-  status: 'COMPLETED' | 'VOID' | 'NON_COMPLIANT';
-  completion_timestamp: string | null;
-  return_amount: number;
-  created_at: string;
-}
+export type TournamentEntryRow = Database['public']['Tables']['tournament_entries']['Row'];
 
-export interface TournamentRow {
-  id: string;
-  session_id: string;
-  name: string;
-  tournament_number: string | null;
-  is_unplanned: boolean;
-  is_unauthorized: boolean;
-  winnings_gross: number | null;
-  net_return: number | null;
-  itm_yn: boolean | null;
-  final_table_yn: boolean | null;
-  best_rank: number | null;
-  worst_rank: number | null;
-  comments: string | null;
+export type TournamentRow = Database['public']['Tables']['tournaments']['Row'] & {
   tournament_entries?: TournamentEntryRow[];
-}
+};
 
 export interface ComplianceFlags {
   isUnauthorized: boolean;      // not in the locked Session Contract
   isUnplanned: boolean;         // not in the locked Weekly Game Plan (MVP: mirrors isUnauthorized — see note at bottom)
-  exceededBuyIns: boolean;      // entry_sequence exceeds the contracted/BRM-permitted max for this slot
+  exceededBuyIns: boolean;      // entry_sequence exceeds the contracted/BRM-permitted max for this slot (PRD §10: "Exceeded permitted buy-ins per tournament")
+  exceededMaxBuyIn: boolean;    // this entry's buy-in amount exceeds the BRM-permitted per-tournament maximum (PRD §10: "Exceeded permitted tournament buy-ins")
   loggedAfterStopLoss: boolean; // Session/Day/Week capacity already consumed
 }
 
@@ -111,12 +90,15 @@ async function flagOccurrences(
   entryId: string,
   flags: ComplianceFlags
 ) {
-  const jobs: Promise<any>[] = [];
+  const jobs: ReturnType<typeof recordExecutionOccurrence>[] = [];
   if (flags.isUnauthorized) {
     jobs.push(recordExecutionOccurrence({ actionName: 'Unauthorized tournament', sessionId, tournamentId, tournamentEntryId: entryId }));
   }
   if (flags.exceededBuyIns) {
     jobs.push(recordExecutionOccurrence({ actionName: 'Exceeded permitted buy-ins', sessionId, tournamentId, tournamentEntryId: entryId }));
+  }
+  if (flags.exceededMaxBuyIn) {
+    jobs.push(recordExecutionOccurrence({ actionName: 'Exceeded permitted tournament buy-ins', sessionId, tournamentId, tournamentEntryId: entryId }));
   }
   if (flags.loggedAfterStopLoss) {
     jobs.push(recordExecutionOccurrence({ actionName: 'Playing after Stop Loss', sessionId, tournamentId, tournamentEntryId: entryId }));
@@ -145,14 +127,33 @@ async function fetchActiveSessionContext(sessionId: string) {
     .from('session_contracts')
     .select(`
       id, session_stop_loss, effective_session_loss_limit_at_creation,
-      remaining_day_capacity_snapshot, remaining_week_capacity_snapshot,
+      remaining_day_capacity_snapshot, remaining_week_capacity_snapshot, brm_assignment_id,
       session_contract_tournaments ( id, tournament_name, slot_number, permitted_buy_ins )
     `)
     .eq('id', session.contract_id)
     .single();
   if (cErr) throw cErr;
 
-  return { session, contract };
+  const maxTournamentBuyIn = await fetchMaxTournamentBuyIn(contract.brm_assignment_id);
+
+  return { session, contract, maxTournamentBuyIn };
+}
+
+// The per-tournament monetary buy-in cap (PRD §4's "Max Buy-in/Tournament")
+// lives on brm_levels, keyed off the Weekly BRM Assignment locked for this
+// session's contract — unlike session_contract_tournaments' permitted_buy_ins
+// (a *count*), there is no per-slot override for this, it's a flat BRM-level
+// ceiling. Null means the coach hasn't configured registration rules for
+// this level (e.g. Levels 6-8) — nothing to enforce in that case.
+async function fetchMaxTournamentBuyIn(brmAssignmentId: string): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('weekly_brm_assignments')
+    .select('brm_levels(max_tournament_buy_in)')
+    .eq('id', brmAssignmentId)
+    .single();
+  if (error) throw error;
+  const level = data?.brm_levels as unknown as { max_tournament_buy_in: number | null } | null;
+  return level?.max_tournament_buy_in ?? null;
 }
 
 // Session Loss Contribution = MAX(0, -Final Session Net P&L), computed only
@@ -174,7 +175,9 @@ async function computeSessionRealizedLossContribution(sessionId: string): Promis
 // the Poker Day/Week. A full cross-session BRM/Risk engine (Section 4/6)
 // is a separate module — this gives a correct, deterministic "authorize or
 // flag" signal for the logging screen itself.
-async function computeRemainingCapacity(sessionId: string, contract: any): Promise<number> {
+type ActiveSessionContext = Awaited<ReturnType<typeof fetchActiveSessionContext>>;
+
+async function computeRemainingCapacity(sessionId: string, contract: ActiveSessionContext['contract']): Promise<number> {
   const realizedLoss = await computeSessionRealizedLossContribution(sessionId);
   const effectiveLimit = Math.min(
     contract.effective_session_loss_limit_at_creation,
@@ -184,7 +187,7 @@ async function computeRemainingCapacity(sessionId: string, contract: any): Promi
   return effectiveLimit - realizedLoss;
 }
 
-function findMatchedSlot(contractTournaments: any[], tournamentName: string) {
+function findMatchedSlot(contractTournaments: ActiveSessionContext['contract']['session_contract_tournaments'], tournamentName: string) {
   return contractTournaments.find(
     (t) => t.tournament_name.trim().toLowerCase() === tournamentName.trim().toLowerCase()
   );
@@ -199,14 +202,12 @@ export async function fetchSessionTournaments(sessionId: string): Promise<Tourna
     .from('tournaments')
     .select('*, tournament_entries(*)')
     .eq('session_id', sessionId)
-    .order('created_at', { ascending: false });
+    .order('tournament_number', { ascending: false });
   if (error) throw error;
 
-  return (data || []).map((t: any) => ({
+  return (data || []).map((t) => ({
     ...t,
-    tournament_entries: (t.tournament_entries || []).sort(
-      (a: TournamentEntryRow, b: TournamentEntryRow) => a.entry_sequence - b.entry_sequence
-    ),
+    tournament_entries: (t.tournament_entries || []).sort((a, b) => a.entry_sequence - b.entry_sequence),
   }));
 }
 
@@ -220,8 +221,8 @@ export async function logNewTournamentEntry(params: {
   tournamentNumber?: string;
   buyInAmount: number;
 }): Promise<{ tournament: TournamentRow; entry: TournamentEntryRow; flags: ComplianceFlags }> {
-  const { contract } = await fetchActiveSessionContext(params.sessionId);
-  const contractTournaments = (contract as any).session_contract_tournaments || [];
+  const { contract, maxTournamentBuyIn } = await fetchActiveSessionContext(params.sessionId);
+  const contractTournaments = contract.session_contract_tournaments || [];
   const matchedSlot = findMatchedSlot(contractTournaments, params.tournamentName);
 
   const remainingCapacity = await computeRemainingCapacity(params.sessionId, contract);
@@ -230,6 +231,7 @@ export async function logNewTournamentEntry(params: {
     isUnauthorized: !matchedSlot,
     isUnplanned: !matchedSlot,
     exceededBuyIns: !!matchedSlot && matchedSlot.permitted_buy_ins < 1,
+    exceededMaxBuyIn: maxTournamentBuyIn !== null && params.buyInAmount > maxTournamentBuyIn,
     loggedAfterStopLoss: remainingCapacity <= 0,
   };
 
@@ -248,7 +250,7 @@ export async function logNewTournamentEntry(params: {
   if (tErr) throw tErr;
 
   // 2. First Tournament Entry
-  const nonCompliant = flags.isUnauthorized || flags.exceededBuyIns || flags.loggedAfterStopLoss;
+  const nonCompliant = flags.isUnauthorized || flags.exceededBuyIns || flags.exceededMaxBuyIn || flags.loggedAfterStopLoss;
   const { data: entry, error: eErr } = await supabase
     .from('tournament_entries')
     .insert({
@@ -277,8 +279,8 @@ export async function logReEntry(params: {
   tournamentId: string;
   buyInAmount: number;
 }): Promise<{ entry: TournamentEntryRow; flags: ComplianceFlags }> {
-  const { contract } = await fetchActiveSessionContext(params.sessionId);
-  const contractTournaments = (contract as any).session_contract_tournaments || [];
+  const { contract, maxTournamentBuyIn } = await fetchActiveSessionContext(params.sessionId);
+  const contractTournaments = contract.session_contract_tournaments || [];
 
   const { data: tournament, error: tErr } = await supabase
     .from('tournaments')
@@ -296,13 +298,14 @@ export async function logReEntry(params: {
   const remainingCapacity = await computeRemainingCapacity(params.sessionId, contract);
 
   const flags: ComplianceFlags = {
-    isUnauthorized: tournament.is_unauthorized,
-    isUnplanned: tournament.is_unauthorized,
+    isUnauthorized: !!tournament.is_unauthorized,
+    isUnplanned: !!tournament.is_unauthorized,
     exceededBuyIns: matchedSlot ? nextSeq > matchedSlot.permitted_buy_ins : true,
+    exceededMaxBuyIn: maxTournamentBuyIn !== null && params.buyInAmount > maxTournamentBuyIn,
     loggedAfterStopLoss: remainingCapacity <= 0,
   };
 
-  const nonCompliant = flags.isUnauthorized || flags.exceededBuyIns || flags.loggedAfterStopLoss;
+  const nonCompliant = flags.isUnauthorized || flags.exceededBuyIns || flags.exceededMaxBuyIn || flags.loggedAfterStopLoss;
   const { data: entry, error: eErr } = await supabase
     .from('tournament_entries')
     .insert({

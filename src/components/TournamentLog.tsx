@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { Plus, RefreshCcw, Flag, CheckCircle2, AlertTriangle, X, Trophy } from 'lucide-react';
 import {
   TournamentRow,
@@ -8,7 +8,8 @@ import {
   logReEntry,
   finalizeTournament,
 } from '../lib/tournaments';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, getErrorMessage } from '../lib/utils';
+import { useAsync } from '../lib/useAsync';
 
 interface TournamentLogProps {
   sessionId: string;
@@ -46,33 +47,20 @@ function EntryFlagBadge({ status }: { status: string }) {
 }
 
 export default function TournamentLog({ sessionId, onEndSession }: TournamentLogProps) {
-  const [tournaments, setTournaments] = useState<TournamentRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, reload: refresh } = useAsync(() => fetchSessionTournaments(sessionId), [sessionId]);
+  const tournaments = data ?? [];
   const [formMode, setFormMode] = useState<FormMode>(null);
   const [saving, setSaving] = useState(false);
   const [lastFlags, setLastFlags] = useState<ComplianceFlags | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [endingSession, setEndingSession] = useState(false);
 
+  const loggedEntryCount = tournaments.reduce((sum, t) => sum + (t.tournament_entries?.length ?? 0), 0);
+  const canEndSession = loggedEntryCount > 0;
+
   const handleEndSessionClick = () => {
+    if (!canEndSession) return;
     setEndingSession(true); // opens a confirm step, not an immediate call
   };
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await fetchSessionTournaments(sessionId);
-      setTournaments(data);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
 
   return (
     <div className="flex flex-col gap-4 relative">
@@ -92,11 +80,19 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
         <button
             type="button"
             onClick={handleEndSessionClick}
-            className="text-12 font-mono px-3 py-1.5 rounded-[4px] border border-signal-risk/40 text-signal-risk hover:bg-signal-risk/10 transition-colors"
+            disabled={!canEndSession}
+            title={canEndSession ? undefined : 'Log at least one buy-in before ending the session.'}
+            className="text-12 font-mono px-3 py-1.5 rounded-[4px] border border-signal-risk/40 text-signal-risk hover:bg-signal-risk/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
           >
             End Session
           </button>
       </div>
+
+      {!canEndSession && (
+        <p className="text-11 text-text-faint -mt-2">
+          Log at least one buy-in before you can end this session.
+        </p>
+      )}
 
       {error && (
         <div className="flex items-start gap-2 text-signal-risk bg-signal-risk/10 p-3 rounded-[4px] border border-signal-risk/25 text-12">
@@ -123,6 +119,7 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
       <div className="flex flex-col gap-3">
         {tournaments.map((t) => {
           const isFinalized = t.net_return !== null;
+          const hasEntries = (t.tournament_entries?.length ?? 0) > 0;
           return (
             <div key={t.id} className="bg-surface border border-border rounded-[6px] overflow-hidden">
               <div className="p-4 flex items-start justify-between gap-4 border-b border-border/60">
@@ -136,9 +133,13 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
                       <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-[4px] bg-signal-process/10 border border-signal-process/30 text-signal-process">
                         Finalized
                       </span>
-                    ) : (
+                    ) : hasEntries ? (
                       <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-[4px] bg-accent-steel/10 border border-accent-steel/30 text-accent-steel">
                         Capital at Risk
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-[4px] bg-surface-raised border border-border text-text-muted">
+                        Authorized — Not Bought In
                       </span>
                     )}
                   </div>
@@ -160,13 +161,15 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
                       >
                         + Buy-in
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormMode({ type: 'finalize', tournament: t })}
-                        className="text-11 font-mono px-2 py-1 rounded-[4px] border border-accent-steel/40 text-accent-steel hover:bg-accent-steel/10 transition-colors flex items-center gap-1"
-                      >
-                        <Trophy size={11} /> Finalize
-                      </button>
+                      {hasEntries && (
+                        <button
+                          type="button"
+                          onClick={() => setFormMode({ type: 'finalize', tournament: t })}
+                          className="text-11 font-mono px-2 py-1 rounded-[4px] border border-accent-steel/40 text-accent-steel hover:bg-accent-steel/10 transition-colors flex items-center gap-1"
+                        >
+                          <Trophy size={11} /> Finalize
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -218,7 +221,7 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
       )}
 
       {/* Non-blocking post-submit compliance notice */}
-      {lastFlags && (lastFlags.isUnauthorized || lastFlags.exceededBuyIns || lastFlags.loggedAfterStopLoss) && (
+      {lastFlags && (lastFlags.isUnauthorized || lastFlags.exceededBuyIns || lastFlags.exceededMaxBuyIn || lastFlags.loggedAfterStopLoss) && (
         <div className="fixed bottom-28 right-8 max-w-sm bg-surface-raised border border-signal-risk/40 rounded-[6px] p-4 shadow-2xl z-20 flex gap-3">
           <AlertTriangle size={16} className="text-signal-risk shrink-0 mt-0.5" />
           <div className="flex flex-col gap-1">
@@ -226,6 +229,7 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
             <p className="text-12 text-text-muted leading-relaxed">
               {lastFlags.isUnauthorized && 'Outside your Session Contract. '}
               {lastFlags.exceededBuyIns && 'Exceeds permitted buy-ins for this slot. '}
+              {lastFlags.exceededMaxBuyIn && 'Buy-in amount exceeds your BRM-permitted maximum. '}
               {lastFlags.loggedAfterStopLoss && 'Logged after your Stop Loss capacity was consumed. '}
               This will be visible to your coach and included in your Verdict evidence.
             </p>
@@ -238,7 +242,7 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
 
         {endingSession && (
                 <EndSessionConfirm
-                  unfinalizedCount={tournaments.filter((t) => t.net_return === null).length}
+                  unfinalizedCount={tournaments.filter((t) => t.net_return === null && (t.tournament_entries?.length ?? 0) > 0).length}
                   onCancel={() => setEndingSession(false)}
                   onConfirm={onEndSession}
                 />
@@ -274,6 +278,7 @@ function EntryFormPanel({
   const [worstRank, setWorstRank] = useState('');
   const [itm, setItm] = useState(false);
   const [finalTable, setFinalTable] = useState(false);
+  const [busted, setBusted] = useState(false);
   const [comments, setComments] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -315,8 +320,8 @@ function EntryFormPanel({
         });
         onSaved();
       }
-    } catch (err: any) {
-      setFormError(err.message);
+    } catch (err) {
+      setFormError(getErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -380,13 +385,27 @@ function EntryFormPanel({
         {mode.type === 'finalize' && (
           <>
             <Field label="Gross Winnings (₹)">
-              <input
-                type="number"
-                value={winnings}
-                onChange={(e) => setWinnings(e.target.value)}
-                placeholder="0"
-                className="input"
-              />
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  value={winnings}
+                  onChange={(e) => setWinnings(e.target.value)}
+                  placeholder="0"
+                  className="input flex-1"
+                />
+                <label className="flex items-center gap-1.5 text-12 text-text-primary cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={busted}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setBusted(checked);
+                      if (checked) { setItm(false); setFinalTable(false); } // can't have either — busting excludes ITM and the final table
+                    }}
+                  />
+                  Busted
+                </label>
+              </div>
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Best Rank">
@@ -397,15 +416,15 @@ function EntryFormPanel({
               </Field>
             </div>
             <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-13 text-text-primary cursor-pointer">
-                <input type="checkbox" checked={itm} onChange={(e) => setItm(e.target.checked)} /> ITM
+              <label className={`flex items-center gap-2 text-13 ${busted ? 'text-text-faint cursor-not-allowed' : 'text-text-primary cursor-pointer'}`}>
+                <input type="checkbox" checked={itm} disabled={busted} onChange={(e) => setItm(e.target.checked)} /> ITM
               </label>
-              <label className="flex items-center gap-2 text-13 text-text-primary cursor-pointer">
-                <input type="checkbox" checked={finalTable} onChange={(e) => setFinalTable(e.target.checked)} /> Final
+              <label className={`flex items-center gap-2 text-13 ${busted ? 'text-text-faint cursor-not-allowed' : 'text-text-primary cursor-pointer'}`}>
+                <input type="checkbox" checked={finalTable} disabled={busted} onChange={(e) => setFinalTable(e.target.checked)} /> Final
                 Table
               </label>
             </div>
-            <Field label="Comments">
+            <Field label="What happened?">
               <textarea rows={3} value={comments} onChange={(e) => setComments(e.target.value)} className="input" />
             </Field>
           </>

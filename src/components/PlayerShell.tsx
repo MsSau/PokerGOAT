@@ -18,17 +18,22 @@ import {
   ChevronRight,
   Bell,
   CheckCircle,
-  Clock,
   ExternalLink,
   DollarSign
 } from 'lucide-react';
 import WeeklyGamePlanView from './WeeklyGamePlanView';
 import SessionContractView from './SessionContractView';
 import TournamentLog from './TournamentLog';
-import { fetchLatestBRMAssignment, startSession, fetchActiveSession, supabase } from '../lib/supabase';
+import { fetchLatestBRMAssignment, fetchActiveSession, supabase } from '../lib/supabase';
 import SessionReview from './SessionReview';
-import { stopSessionForReview } from '../lib/endSession';
+import { stopSessionForReview, resumeSessionForEditing } from '../lib/endSession';
 import SessionLog from './SessionLog';
+import PreparationView from './PreparationView';
+import BehavioralProfileView from './BehavioralProfileView';
+import VerdictsView from './VerdictsView';
+import PlayerInterventionsView from './PlayerInterventionsView';
+import { countActiveAssignmentsForPlayer } from '../lib/interventions';
+import { useAsync } from '../lib/useAsync';
 
 
 interface PlayerShellProps {
@@ -43,10 +48,17 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
   const [activeTab, setActiveTab] = useState<PlayerRoute>('dashboard');
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
 
-  // Simulation States (to show interactive badges / active session behavior)
-  const [hasIntervention, setHasIntervention] = useState(true);
-  const [hasPendingAction, setHasPendingAction] = useState(true);
   const [sessionLoading, setSessionLoading] = useState(true);
+
+  // Real Coach-Assigned Interventions count for the rail badge (PRD §16).
+  // refreshKey bumps after the Interventions tab marks one complete, so the
+  // badge doesn't keep showing a stale count until the next full remount.
+  const [interventionRefreshKey, setInterventionRefreshKey] = useState(0);
+  const { data: activeInterventionCount } = useAsync(
+    () => countActiveAssignmentsForPlayer(userId),
+    [userId, interventionRefreshKey],
+  );
+  const hasIntervention = (activeInterventionCount ?? 0) > 0;
 
   // Active Session state
 const [session, setSession] = useState<ActiveSession>({
@@ -148,7 +160,16 @@ const handleEndSessionClicked = async () => {
 // session is now FINALIZED server-side.
 const handleReviewComplete = () => {
   setSession((prev) => ({ ...prev, isActive: false, status: 'FINALIZED', startTime: null }));
-  setActiveTab('dashboard'); // per §2.1 CTA state machine, land back on the dashboard
+  setActiveTab('log'); // land on the Log tab so the player sees the just-finalized session's medals/verdict
+};
+
+// Lets the player back out of review (confirm-entries step's "Edit
+// Entries" button) to fix/add tournament entries before finalizing —
+// the reverse of handleEndSessionClicked, restoring TournamentLog.
+const handleGoBackToEdit = async () => {
+  if (!session.id) return;
+  await resumeSessionForEditing(session.id);
+  setSession((prev) => ({ ...prev, status: 'ACTIVE' }));
 };
   
 
@@ -167,13 +188,14 @@ const handleReviewComplete = () => {
 
   // Navigation Items
   const navItems = [
-    { id: 'dashboard' as PlayerRoute, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'prepare' as PlayerRoute, label: 'Prepare', icon: Sparkles },
+    { id: 'dashboard' as PlayerRoute, label: 'Command Centre', icon: LayoutDashboard },   
     { id: 'plan' as PlayerRoute, label: 'Plan', icon: CalendarDays, sub: 'Weekly Game Plan' },
+    { id: 'prepare' as PlayerRoute, label: 'Prepare', icon: Sparkles,sub: 'Before Session' },
     { id: 'play' as PlayerRoute, label: 'Play', icon: Swords, sub: 'Session Contract' },
     { id: 'log' as PlayerRoute, label: 'Log', icon: History, sub: 'Session Records' },
     { id: 'progress' as PlayerRoute, label: 'Progress', icon: TrendingUp, sub: 'Behavioral Profile' },
     { id: 'verdicts' as PlayerRoute, label: 'Verdicts', icon: Award, sub: 'Coach Decisions' },
+    { id: 'interventions' as PlayerRoute, label: 'Interventions', icon: AlertTriangle, sub: 'Coach Assigned' },
   ];
 
   return (
@@ -257,10 +279,12 @@ const handleReviewComplete = () => {
         {/* Bottom of Rail Indicators */}
         <div className="border-t border-border p-2 flex flex-col gap-2 bg-ink/30">
           
-          {/* Coach-Assigned Interventions Badge */}
+          {/* Coach-Assigned Interventions Badge — real ASSIGNED count, links to the tab */}
           {hasIntervention && (
-            <div 
-              className={`flex items-center rounded-[4px] p-2 bg-signal-risk/5 border border-signal-risk/20 cursor-help ${
+            <button
+              type="button"
+              onClick={() => setActiveTab('interventions')}
+              className={`flex items-center rounded-[4px] p-2 bg-signal-risk/5 border border-signal-risk/20 cursor-pointer text-left ${
                 isRailCollapsed ? 'justify-center' : 'justify-between'
               }`}
               title="Coach Pending Intervention Assigned"
@@ -275,34 +299,10 @@ const handleReviewComplete = () => {
               </div>
               {!isRailCollapsed && (
                 <span className="bg-signal-risk text-text-primary font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[999px]">
-                  1
+                  {activeInterventionCount}
                 </span>
               )}
-            </div>
-          )}
-
-          {/* Proposed-Action Status Indicator */}
-          {hasPendingAction && (
-            <div 
-              className={`flex items-center rounded-[4px] p-2 bg-signal-caution/5 border border-signal-caution/20 cursor-help ${
-                isRailCollapsed ? 'justify-center' : 'justify-between'
-              }`}
-              title="Execution Action Pending Coach Approval"
-            >
-              <div className="flex items-center gap-2">
-                <Clock size={16} className="text-signal-caution shrink-0" />
-                {!isRailCollapsed && (
-                  <span className="text-12 font-medium text-signal-caution">
-                    Action Pending
-                  </span>
-                )}
-              </div>
-              {!isRailCollapsed && (
-                <span className="text-[10px] text-text-muted font-mono uppercase tracking-wider">
-                  Review
-                </span>
-              )}
-            </div>
+            </button>
           )}
 
           {/* Account & Session Controls */}
@@ -330,23 +330,6 @@ const handleReviewComplete = () => {
                 <span className="font-mono text-[9px] uppercase tracking-wide text-text-faint">
                   Sandbox Controls
                 </span>
-                <div className="flex justify-between items-center">
-                  <span>Badge triggers:</span>
-                  <button 
-                    type="button"
-                    onClick={() => setHasIntervention(!hasIntervention)}
-                    className={`px-1 py-0.5 rounded border ${hasIntervention ? 'border-signal-risk/40 text-signal-risk' : 'border-border text-text-faint'}`}
-                  >
-                    Intv
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => setHasPendingAction(!hasPendingAction)}
-                    className={`px-1 py-0.5 rounded border ${hasPendingAction ? 'border-signal-caution/40 text-signal-caution' : 'border-border text-text-faint'}`}
-                  >
-                    Actn
-                  </button>
-                </div>
                 <button
                   type="button"
                   onClick={() => onSwitchRole('COACH')}
@@ -376,8 +359,8 @@ const handleReviewComplete = () => {
       {/* 2. MAIN CONTAINER WITH TOP BAR & DYNAMIC INNER STAGE */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
         
-        {/* TOP BAR: ACTIVE-SESSION RISK STRIP & SEARCH */}
-        <header className="h-16 bg-surface border-b border-border px-6 flex items-center gap-8 shrink-0 z-10">
+        {/* TOP BAR: ACTIVE-SESSION RISK STRIP & TAGLINE */}
+        <header className="h-16 bg-surface border-b border-border px-6 flex items-center justify-between gap-8 shrink-0 z-10">
           <div className="flex items-center gap-6 text-12 font-mono">
             <div className="flex flex-col items-center">
               <span className="text-text-muted">SESSION LIMIT</span>
@@ -392,10 +375,10 @@ const handleReviewComplete = () => {
               <span className="text-text-primary font-semibold">₹{session.weekLimit.toFixed(2)}</span>
             </div>
           </div>
-          
 
-
-
+          <span className="text-12 text-text-muted italic tracking-tight shrink-0 hidden md:inline">
+            Build your edge. Protect your bankroll. Master your process.
+          </span>
         </header>
 
         {/* 3. STAGE CONTENT: DYNAMIC PLACEHOLDERS */}
@@ -418,39 +401,22 @@ const handleReviewComplete = () => {
                 {activeTab === 'log' && 'The historical ledger of past playing sessions, outcomes, and mental notes.'}
                 {activeTab === 'progress' && 'Behavioral profiles, discipline ratings, trend directions, and tactical growth indicators.'}
                 {activeTab === 'verdicts' && 'Decisions, interventions, and critiques assigned directly by your coach.'}
+                {activeTab === 'interventions' && 'Coach-assigned interventions — read what\'s expected and mark them complete with a note for your coach.'}
               </p>
             </div>
 
             {/* DYNAMIC HIGH-FIDELITY PLACEHOLDERS */}
-            {activeTab === 'dashboard' && <PlayerDashboard userId={userId} />}
+            {activeTab === 'dashboard' && <PlayerDashboard userId={userId} onStartPreparation={() => setActiveTab('prepare')} />}
 
             {activeTab === 'prepare' && (
               <div className="flex flex-col gap-6">
-                <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                  <span className="text-12 font-mono text-text-muted uppercase">Mental Prep Framework & Daily Habits Checklist</span>
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-start gap-3 p-3 bg-surface-raised rounded border border-border">
-                      <input type="checkbox" className="mt-1 accent-accent-steel animate-pulse cursor-pointer" defaultChecked />
-                      <div className="flex flex-col">
-                        <span className="text-14 font-medium text-text-primary">Check for physiological fatigue</span>
-                        <span className="text-12 text-text-muted font-mono">Stop-loss triggers if sleep is under 6 hours. Verified via wear link.</span>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 bg-surface-raised rounded border border-border">
-                      <input type="checkbox" className="mt-1 accent-accent-steel cursor-pointer" />
-                      <div className="flex flex-col">
-                        <span className="text-14 font-medium text-text-primary">Explicitly review the Active Performance Framework</span>
-                        <span className="text-12 text-text-muted font-mono">Ensure BB calling boundaries and MDF principles are top of mind.</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <PreparationView
+                  userId={userId}
+                  defaultStopLoss={session.sessionLimit}
+                  onGoToTournamentSelection={() => setActiveTab('play')}
+                />
 
-                <div className="flex flex-col gap-2">
-                  <h3 className="text-12 font-mono text-text-muted uppercase tracking-wider">Active Protocol Framework</h3>
-                  <ActiveFrameworkView userId={userId} role="PLAYER" />
-                </div>
-              </div>
+                              </div>
             )}
 
             {activeTab === 'plan' && <WeeklyGamePlanView userId={userId} />}
@@ -461,69 +427,26 @@ const handleReviewComplete = () => {
                   <TournamentLog sessionId={session.id} onEndSession={handleEndSessionClicked} />
                 )}
                 {session.status === 'REVIEW_PENDING' && session.id && (
-                  <SessionReview sessionId={session.id} playerId={userId} onComplete={handleReviewComplete} />
+                  <SessionReview sessionId={session.id} playerId={userId} onComplete={handleReviewComplete} onGoBackToEdit={handleGoBackToEdit} />
                 )}
                 {(session.status === 'NONE' || session.status === 'FINALIZED') && (
-                  <SessionContractView userId={userId} onSessionStarted={handleSessionStarted} />
+                  <SessionContractView
+                    userId={userId}
+                    onSessionStarted={handleSessionStarted}
+                    onGoToPrepare={() => setActiveTab('prepare')}
+                  />
                 )}
               </>
             )}
 
             {activeTab === 'log' && <SessionLog userId={userId} />}
 
-            {activeTab === 'progress' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-6">
-                <span className="text-12 font-mono text-text-muted uppercase">Behavioral Profile Status</span>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Performance stats */}
-                  <div className="flex flex-col gap-3">
-                    <div className="flex justify-between items-center border-b border-border/50 pb-2">
-                      <span className="text-14 text-text-muted">Tilt Resilience</span>
-                      <span className="text-14 font-mono text-signal-process">Excellent</span>
-                    </div>
-                    <div className="flex justify-between items-center border-b border-border/50 pb-2">
-                      <span className="text-14 text-text-muted">Stop-Loss Adherence</span>
-                      <span className="text-14 font-mono text-signal-process">100%</span>
-                    </div>
-                    <div className="flex justify-between items-center border-b border-border/50 pb-2">
-                      <span className="text-14 text-text-muted">Emotional Baselines</span>
-                      <span className="text-14 font-mono text-signal-caution">Stable</span>
-                    </div>
-                  </div>
+            {activeTab === 'progress' && <BehavioralProfileView userId={userId} />}
 
-                  {/* Description container */}
-                  <div className="p-4 bg-surface-raised rounded border border-border text-12 text-text-muted leading-relaxed flex flex-col gap-2">
-                    <span className="font-mono text-12 text-text-primary uppercase">RADIAL RATINGS ANALYSIS</span>
-                    <p>
-                      Your progress indicates high-fidelity adherence to process, but early indicators show weak ratings on "Endurance in extended deep structures."
-                    </p>
-                    <p className="text-signal-process font-mono">
-                      ● Action Plan: Keep sessions strictly capped at 90 minutes.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
+            {activeTab === 'verdicts' && <VerdictsView userId={userId} />}
 
-            {activeTab === 'verdicts' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Active Coaching Verdicts</span>
-                <div className="p-4 bg-surface-raised rounded border border-border flex flex-col gap-3">
-                  <div className="flex justify-between items-start border-b border-border pb-2">
-                    <div className="flex flex-col">
-                      <span className="text-14 font-semibold text-text-primary">Execution Verdict V-82</span>
-                      <span className="text-12 text-text-faint font-mono">Assigned by Coach Julian</span>
-                    </div>
-                    <span className="text-[10px] bg-accent-bronze/10 border border-accent-bronze/30 text-accent-bronze font-mono px-2 py-0.5 rounded-full uppercase">
-                      Action Required
-                    </span>
-                  </div>
-                  <p className="text-14 text-text-muted leading-relaxed">
-                    "We need to restrict cold call 3-bets from the small blind when an aggressive button sits with a 50+ BB stack. Review your SB defense spreadsheet immediately."
-                  </p>
-                </div>
-              </div>
+            {activeTab === 'interventions' && (
+              <PlayerInterventionsView userId={userId} onAssignmentsChanged={() => setInterventionRefreshKey((k) => k + 1)} />
             )}
 
             {/* General Placeholder Warning info bar */}

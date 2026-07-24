@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase, getUserRole } from '../lib/supabase';
+import { getErrorMessage } from '../lib/utils';
 import { UserRole } from '../types';
 import { Shield, User, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 
@@ -66,8 +67,8 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       } else {
         throw new Error('Authentication failed: user record not found.');
       }
-    } catch (err: any) {
-      let message = err.message || 'An unexpected error occurred during sign-in.';
+    } catch (err) {
+      let message = getErrorMessage(err, 'An unexpected error occurred during sign-in.');
       if (message.includes('Email not confirmed')) {
         message = 'Your email address has not been confirmed. Please check your inbox for the confirmation link.';
       }
@@ -93,8 +94,8 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
           <h1 className="font-display text-28 font-medium tracking-tight text-text-primary mt-2">
             PokerGOAT
           </h1>
-          <p className="text-14 text-text-muted">
-            Personal statistics tracking & bankroll management
+          <p className="text-14 text-text-muted italic">
+            Build your edge. Protect your bankroll. Master your process.
           </p>
         </div>
 

@@ -1,10 +1,12 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { Lock, AlertTriangle, CheckCircle2, Repeat, X } from 'lucide-react';
 import {
   fetchCurrentPokerWeek,
   fetchLockedWeeklyGamePlan,
   fetchWeeklyBRMAssignment,
   computeCapacity,
+  computeTodayBoundaries,
+  toLocalDateKey,
   fetchExistingContractForSession,
   createValidatedSessionContract,
   lockContractAndStartSession,
@@ -14,26 +16,31 @@ import {
   WGPTournamentSlot,
   WGPConditionalTournament,
   SessionContractRow,
+  SessionContractSubstitutionRow,
+  SessionContractTournamentRow,
   CapacityState,
+  WeeklyBRMAssignmentSummary,
+  WeeklyGamePlanSummary,
 } from '../lib/sessionContract';
 import { supabase } from '../lib/supabase';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, getErrorMessage } from '../lib/utils';
+import { useAsync } from '../lib/useAsync';
+import { fetchAvailablePreparationRecord, PreparationRecordRow } from '../lib/preparation';
 
 interface SessionContractViewProps {
   userId: string;
   onSessionStarted: (sessionId: string) => void;
+  onGoToPrepare: () => void;
 }
 
-export default function SessionContractView({ userId, onSessionStarted }: SessionContractViewProps) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default function SessionContractView({ userId, onSessionStarted, onGoToPrepare }: SessionContractViewProps) {
   const [coachId, setCoachId] = useState<string | null>(null);
   const [pokerWeekId, setPokerWeekId] = useState<string | null>(null);
   const [boundaryConfigId, setBoundaryConfigId] = useState<string | null>(null);
-  const [plan, setPlan] = useState<{ id: string } | null>(null);
+  const [plan, setPlan] = useState<WeeklyGamePlanSummary | null>(null);
   const [slots, setSlots] = useState<WGPTournamentSlot[]>([]);
   const [conditionals, setConditionals] = useState<WGPConditionalTournament[]>([]);
-  const [brmAssignment, setBrmAssignment] = useState<any>(null);
+  const [brmAssignment, setBrmAssignment] = useState<WeeklyBRMAssignmentSummary | null>(null);
   const [capacity, setCapacity] = useState<CapacityState | null>(null);
   const [contract, setContract] = useState<SessionContractRow | null>(null);
   const [selectedSlotIds, setSelectedSlotIds] = useState<Set<string>>(new Set());
@@ -41,65 +48,62 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
   const [intention, setIntention] = useState('');
   const [saving, setSaving] = useState(false);
   const [showSubForm, setShowSubForm] = useState(false);
-  const [substitutions, setSubstitutions] = useState<any[]>([]);
-  const [lockedSlots, setLockedSlots] = useState<any[]>([]);
+  const [substitutions, setSubstitutions] = useState<SessionContractSubstitutionRow[]>([]);
+  const [lockedSlots, setLockedSlots] = useState<SessionContractTournamentRow[]>([]);
+  const [availablePreparation, setAvailablePreparation] = useState<PreparationRecordRow | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { data: profile } = await supabase.from('profiles').select('coach_id').eq('id', userId).single();
-      setCoachId(profile?.coach_id ?? null);
+  const { loading, error, setError, reload: load } = useAsync(async () => {
+    const { data: profile } = await supabase.from('profiles').select('coach_id').eq('id', userId).single();
+    setCoachId(profile?.coach_id ?? null);
 
-      const week = await fetchCurrentPokerWeek(userId);
-      if (!week) {
-        setError('No active Poker Week found for the current time. Ask your coach to check the boundary configuration.');
-        return;
+    setAvailablePreparation(await fetchAvailablePreparationRecord(userId));
+
+    const week = await fetchCurrentPokerWeek(userId);
+    if (!week) {
+      throw new Error('No active Poker Week found for the current time. Ask your coach to check the boundary configuration.');
+    }
+    setPokerWeekId(week.id);
+    setBoundaryConfigId(week.boundary_config_id);
+
+    const wgpResult = await fetchLockedWeeklyGamePlan(userId, week.id);
+    if (!wgpResult) {
+      throw new Error('No locked Weekly Game Plan for this Poker Week yet. Create and lock one under Plan.');
+    }
+    setPlan(wgpResult.plan);
+
+    // Table/slot numbers reset per planned day (and per session within a
+    // day) in the Weekly Game Plan — see WeeklyGamePlanView's addTournament
+    // — so the same slot_number legitimately repeats across different days.
+    // A Session Contract is for one sitting, and session_contract_tournaments
+    // enforces UNIQUE(session_contract_id, slot_number), so the picker must
+    // only offer today's planned tournaments, never the whole week's.
+    const today = await computeTodayBoundaries(week.boundary_config_id);
+    const todayKey = toLocalDateKey(today.start);
+    setSlots(wgpResult.tournaments.filter((t) => t.planned_date === todayKey));
+    setConditionals(wgpResult.conditionals);
+
+    const brm = await fetchWeeklyBRMAssignment(userId, week.id);
+    if (!brm) {
+      throw new Error('No locked BRM assignment for this Poker Week. Ask your coach to run the weekly review.');
+    }
+    setBrmAssignment(brm);
+
+    const cap = await computeCapacity(userId, week, brm);
+    setCapacity(cap);
+
+    const existing = await fetchExistingContractForSession(userId, wgpResult.plan.id);
+    if (existing) {
+      setContract(existing);
+      if (existing.status === 'LOCKED') {
+        const [tourns, subs] = await Promise.all([
+          fetchLockedContractTournaments(existing.id),
+          fetchSubstitutions(existing.id),
+        ]);
+        setLockedSlots(tourns);
+        setSubstitutions(subs);
       }
-      setPokerWeekId(week.id);
-      setBoundaryConfigId(week.boundary_config_id);
-
-      const wgpResult = await fetchLockedWeeklyGamePlan(userId, week.id);
-      if (!wgpResult) {
-        setError('No locked Weekly Game Plan for this Poker Week yet. Create and lock one under Plan.');
-        return;
-      }
-      setPlan(wgpResult.plan);
-      setSlots(wgpResult.tournaments);
-      setConditionals(wgpResult.conditionals);
-
-      const brm = await fetchWeeklyBRMAssignment(userId, week.id);
-      if (!brm) {
-        setError('No locked BRM assignment for this Poker Week. Ask your coach to run the weekly review.');
-        return;
-      }
-      setBrmAssignment(brm);
-
-      const cap = await computeCapacity(userId, week, brm);
-      setCapacity(cap);
-
-      const existing = await fetchExistingContractForSession(userId, wgpResult.plan.id);
-      if (existing) {
-        setContract(existing);
-        if (existing.status === 'LOCKED') {
-          const [tourns, subs] = await Promise.all([
-            fetchLockedContractTournaments(existing.id),
-            fetchSubstitutions(existing.id),
-          ]);
-          setLockedSlots(tourns);
-          setSubstitutions(subs);
-        }
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
     }
   }, [userId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const toggleSlot = (id: string) => {
     setSelectedSlotIds((prev) => {
@@ -118,39 +122,57 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
 
   const handleValidate = async () => {
     if (!plan || !brmAssignment || !capacity || !coachId) return;
+    const selectedSlots = slots.filter((s) => selectedSlotIds.has(s.id));
+
+    // Two sessions planned for the same day both use table numbers starting
+    // at 1 (see WeeklyGamePlanView's addTournament) — today's filter alone
+    // can't separate them, since session isn't persisted. Catch it here with
+    // a clear message rather than letting the DB's unique constraint on
+    // (session_contract_id, slot_number) throw.
+    const seenSlotNumbers = new Set<number>();
+    const duplicateTable = selectedSlots.find((s) => {
+      if (seenSlotNumbers.has(s.slot_number)) return true;
+      seenSlotNumbers.add(s.slot_number);
+      return false;
+    });
+    if (duplicateTable) {
+      setError(`Table ${duplicateTable.slot_number} is selected more than once — pick tournaments from a single session only.`);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
       const created = await createValidatedSessionContract({
         playerId: userId,
         coachId,
-        plan: plan as any,
+        plan,
         brmAssignment,
         capacity,
-        selectedSlots: slots.filter((s) => selectedSlotIds.has(s.id)),
+        selectedSlots,
         selectedConditionals: conditionals.filter((c) => selectedConditionalIds.has(c.id)),
         sessionIntention: intention,
       });
       setContract(created);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(getErrorMessage(err));
     } finally {
       setSaving(false);
     }
   };
 
   const handleStartSession = async () => {
-    if (!contract) return;
+    if (!contract || !availablePreparation) return;
     setSaving(true);
     setError(null);
     try {
       const { sessionId } = await lockContractAndStartSession({
-        playerId: userId,
         contractId: contract.id,
+        preparationId: availablePreparation.id,
       });
       onSessionStarted(sessionId);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(getErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -193,11 +215,11 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
               </div>
               <div className="flex flex-col">
                 <span className="text-text-muted">DAY CAPACITY (AT LOCK)</span>
-                <span className="text-text-primary text-16 mt-1">{formatCurrency(contract.remaining_day_capacity_snapshot)}</span>
+                <span className="text-text-primary text-16 mt-1">{contract.remaining_day_capacity_snapshot !== null ? formatCurrency(contract.remaining_day_capacity_snapshot) : '—'}</span>
               </div>
               <div className="flex flex-col">
                 <span className="text-text-muted">WEEK CAPACITY (AT LOCK)</span>
-                <span className="text-text-primary text-16 mt-1">{formatCurrency(contract.remaining_week_capacity_snapshot)}</span>
+                <span className="text-text-primary text-16 mt-1">{contract.remaining_week_capacity_snapshot !== null ? formatCurrency(contract.remaining_week_capacity_snapshot) : '—'}</span>
               </div>
             </div>
 
@@ -215,7 +237,7 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
         {substitutions.map((sub) => (
           <div key={sub.id} className="bg-surface border border-signal-caution/30 rounded-[6px] p-4 flex flex-col gap-1">
             <div className="flex items-center gap-2 text-12 font-mono text-signal-caution uppercase">
-              <Repeat size={12} /> Substitution — {new Date(sub.created_at).toLocaleString()}
+              <Repeat size={12} /> Substitution — {sub.created_at ? new Date(sub.created_at).toLocaleString() : '—'}
             </div>
             <span className="text-13 text-text-primary">→ {sub.replacement_tournament_name}</span>
             <span className="text-12 text-text-muted">Reason: {sub.reason}</span>
@@ -260,9 +282,26 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
           Effective Session Loss Limit: {formatCurrency(contract.effective_session_loss_limit_at_creation)}
         </div>
         {error && <span className="text-12 text-signal-risk">{error}</span>}
+        {!availablePreparation && (
+          <div className="flex items-start gap-2 bg-signal-caution/10 border border-signal-caution/30 rounded-[4px] p-3">
+            <AlertTriangle size={14} className="text-signal-caution mt-0.5 shrink-0" />
+            <div className="flex flex-col gap-2">
+              <span className="text-12 text-signal-caution">
+                Complete a Preparation Check-in before starting this session.
+              </span>
+              <button
+                type="button"
+                onClick={onGoToPrepare}
+                className="self-start text-12 text-accent-steel hover:underline"
+              >
+                Go to Prepare
+              </button>
+            </div>
+          </div>
+        )}
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || !availablePreparation}
           onClick={handleStartSession}
           className="w-full h-11 bg-accent-steel text-text-primary rounded-[4px] hover:bg-accent-steel/90 text-14 font-medium disabled:opacity-50"
         >
@@ -276,8 +315,17 @@ export default function SessionContractView({ userId, onSessionStarted }: Sessio
   return (
     <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-5">
       <span className="text-12 font-mono text-text-muted uppercase tracking-wider">
-        Select from your locked Weekly Game Plan
+        Select from today's locked Weekly Game Plan
       </span>
+
+      {slots.length === 0 && conditionals.length === 0 && (
+        <div className="flex items-start gap-2 bg-signal-caution/10 border border-signal-caution/30 rounded-[4px] p-3">
+          <AlertTriangle size={14} className="text-signal-caution mt-0.5 shrink-0" />
+          <span className="text-12 text-signal-caution">
+            No tournaments are planned for today in your locked Weekly Game Plan.
+          </span>
+        </div>
+      )}
 
       {capacity?.blocked && (
         <div className="flex items-start gap-2 bg-signal-risk/10 border border-signal-risk/30 rounded-[4px] p-3">
@@ -384,7 +432,7 @@ function SubstitutionPanel({
   onSaved,
 }: {
   contractId: string;
-  slots: any[];
+  slots: SessionContractTournamentRow[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -416,8 +464,8 @@ function SubstitutionPanel({
         passedBrmValidation: passed,
       });
       onSaved();
-    } catch (e: any) {
-      setErr(e.message);
+    } catch (e) {
+      setErr(getErrorMessage(e));
     } finally {
       setSaving(false);
     }

@@ -14,6 +14,9 @@
   --signal-risk: #B85C4A;
   --signal-process: #7A9B7E;
   --signal-caution: #C4A050;
+  --medal-gold: #C9A227;
+  --medal-silver: #9AA5B1;
+  --medal-bronze: #9C7A4A;
 }
 
 @theme {
@@ -33,6 +36,9 @@
   --color-signal-risk: var(--signal-risk);
   --color-signal-process: var(--signal-process);
   --color-signal-caution: var(--signal-caution);
+  --color-medal-gold: var(--medal-gold);
+  --color-medal-silver: var(--medal-silver);
+  --color-medal-bronze: var(--medal-bronze);
 }
 
 /* Base resets & styles using design tokens */

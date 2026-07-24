@@ -1,18 +1,40 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronRight, Mic, Type } from 'lucide-react';
+import React, { useState, useMemo, useRef } from 'react';
+import { CheckCircle2, ChevronRight, Mic, MicOff, Type } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { fetchSessionTournaments, TournamentRow } from '../lib/tournaments';
 import { endSession, EndSessionResult, TournamentFinish, MistakeTagInput } from '../lib/endSession';
+import { useAsync } from '../lib/useAsync';
+import { getErrorMessage, medalColorClass } from '../lib/utils';
+import { MinimalSpeechRecognition, getSpeechRecognitionCtor } from '../lib/speechRecognition';
 
 interface Props {
   sessionId: string;
   playerId: string;
   onComplete: (result: EndSessionResult) => void;
+  onGoBackToEdit: () => Promise<void>;
 }
 
 type Step = 'confirm-entries' | 'finalize' | 'mistakes' | 'reflection' | 'submitting' | 'done';
 
-interface CanonicalAction { id: string; name: string; description: string | null; dimension: string; }
+interface CanonicalAction { id: string; name: string; description: string | null; dimension: string; detection_method: string | null; }
+
+// Actions the system already detects on its own (TournamentLog's compliance
+// flag detection — see tournaments.ts's flagOccurrences) must never appear
+// as a manually-tappable mistake here, regardless of whether one actually
+// fired this session — offering them invites double-tagging the same
+// occurrence, and the whole point of "System-detected"/"System-derived" in
+// the coach's taxonomy (TaxonomyConfigView.tsx's Detection Method field) is
+// that the player never has to self-report them.
+//
+// Live data carries this in two different formats — 'SYSTEM_DETECTED'
+// (upper-snake-case, older/seeded rows) alongside 'System-detected'
+// (hyphenated, entered via TaxonomyConfigView.tsx's dropdown) — so this
+// compares a normalized (uppercased, punctuation-stripped) form rather than
+// an exact string, and catches both without needing a data migration.
+function isSystemOnlyDetection(method: string | null): boolean {
+  if (!method) return false;
+  return method.toUpperCase().replace(/[^A-Z]/g, '').startsWith('SYSTEM');
+}
 
 const DIMENSION_TABS = [
   { key: 'DISCIPLINE_PROCESS', label: 'Discipline/Process' },
@@ -21,41 +43,68 @@ const DIMENSION_TABS = [
   { key: 'LEARNING_IMPROVEMENT', label: 'Learning' },
 ];
 
-export default function SessionReview({ sessionId, playerId, onComplete }: Props) {
+export default function SessionReview({ sessionId, playerId, onComplete, onGoBackToEdit }: Props) {
   const [step, setStep] = useState<Step>('confirm-entries');
-  const [tournaments, setTournaments] = useState<TournamentRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [finishes, setFinishes] = useState<Record<string, Partial<TournamentFinish>>>({});
-  const [actions, setActions] = useState<CanonicalAction[]>([]);
   const [activeTab, setActiveTab] = useState(DIMENSION_TABS[0].key);
   const [selectedTags, setSelectedTags] = useState<Record<string, { actionId: string; tournamentId?: string }>>({});
+  const [bustedIds, setBustedIds] = useState<Set<string>>(new Set());
   const [reflection, setReflection] = useState('');
-  const [voiceMode, setVoiceMode] = useState(false);
+  const [listening, setListening] = useState(false);
   const [result, setResult] = useState<EndSessionResult | null>(null);
+  const [goingBack, setGoingBack] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setTournaments(await fetchSessionTournaments(sessionId));
-      const { data, error: aErr } = await supabase
-        .from('execution_actions')
-        .select('id, name, description, dimension, taxonomy_versions!inner(is_activated)')
-        .eq('status', 'CANONICAL_ACTIVE')
-        .eq('taxonomy_versions.is_activated', true);
-      if (aErr) throw aErr;
-      setActions((data || []) as CanonicalAction[]);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
+  const recognitionRef = useRef<MinimalSpeechRecognition | null>(null);
+  const speechSupported = typeof window !== 'undefined' && !!getSpeechRecognitionCtor();
+
+  function toggleVoice() {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
     }
+    const recognition = new Ctor();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    recognition.onresult = (event) => {
+      const transcript = event.results[event.resultIndex]?.[0]?.transcript;
+      if (transcript) setReflection((prev) => (prev ? `${prev} ${transcript}` : transcript));
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  const { data, loading, error, setError } = useAsync(async () => {
+    const tournaments = await fetchSessionTournaments(sessionId);
+    const { data, error: aErr } = await supabase
+      .from('execution_actions')
+      .select('id, name, description, dimension, detection_method, taxonomy_versions!inner(is_activated)')
+      .eq('status', 'CANONICAL_ACTIVE')
+      .eq('taxonomy_versions.is_activated', true);
+    if (aErr) throw aErr;
+
+    return { tournaments, actions: (data || []) as CanonicalAction[] };
   }, [sessionId]);
+  const tournaments = data?.tournaments ?? [];
+  const actions = data?.actions ?? [];
+  const taggableActions = useMemo(
+    () => actions.filter((a) => !isSystemOnlyDetection(a.detection_method)),
+    [actions]
+  );
 
-  useEffect(() => { load(); }, [load]);
-
-  const unfinalized = useMemo(() => tournaments.filter((t) => t.net_return === null), [tournaments]);
+  // A tournament that was authorized via the Session Contract but never
+  // actually bought into (0 entries) isn't "unfinalized" — there's no result
+  // to ask for. Only tournaments with a real buy-in logged need finalizing.
+  const unfinalized = useMemo(
+    () => tournaments.filter((t) => t.net_return === null && (t.tournament_entries?.length ?? 0) > 0),
+    [tournaments]
+  );
 
   const updateFinish = (tid: string, patch: Partial<TournamentFinish>) =>
     setFinishes((prev) => ({ ...prev, [tid]: { ...prev[tid], ...patch } }));
@@ -80,15 +129,32 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
         worstRank: finishes[t.id]?.worstRank,
         itmYn: !!finishes[t.id]?.itmYn,
         finalTableYn: !!finishes[t.id]?.finalTableYn,
+        comments: finishes[t.id]?.comments,
       }));
       const mistakeTags: MistakeTagInput[] = Object.values(selectedTags).map((v) => ({ executionActionId: v.actionId }));
       const res = await endSession({ sessionId, playerId, tournamentFinishes, mistakeTags, reflectionNote: reflection });
       setResult(res);
       setStep('done');
       onComplete(res);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(getErrorMessage(e));
       setStep('reflection');
+    }
+  };
+
+  // Backs out of review entirely — resumes the ACTIVE session so
+  // TournamentLog reappears and the player can fix/add entries. Only
+  // offered from the very first step, before anything else in this review
+  // has been touched.
+  const handleGoBack = async () => {
+    setGoingBack(true);
+    setError(null);
+    try {
+      await onGoBackToEdit();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setGoingBack(false);
     }
   };
 
@@ -121,10 +187,16 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
             ))}
             {tournaments.length === 0 && <span className="text-12 text-text-faint">No tournaments logged this session.</span>}
           </div>
-          <button type="button" onClick={() => setStep(unfinalized.length ? 'finalize' : 'mistakes')}
-            className="self-end h-10 px-5 bg-accent-steel text-text-primary rounded-[4px] text-14 font-medium flex items-center gap-1">
-            Confirmed <ChevronRight size={14} />
-          </button>
+          <div className="self-end flex items-center gap-3">
+            <button type="button" onClick={handleGoBack} disabled={goingBack}
+              className="h-10 px-4 border border-border rounded-[4px] text-13 text-text-muted hover:text-text-primary hover:border-text-faint transition-colors disabled:opacity-50">
+              {goingBack ? 'Returning…' : 'Edit Entries'}
+            </button>
+            <button type="button" onClick={() => setStep(unfinalized.length ? 'finalize' : 'mistakes')} disabled={goingBack}
+              className="h-10 px-5 bg-accent-steel text-text-primary rounded-[4px] text-14 font-medium flex items-center gap-1 disabled:opacity-50">
+              Confirmed <ChevronRight size={14} />
+            </button>
+          </div>
         </div>
       )}
 
@@ -135,17 +207,51 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
             <div key={t.id} className="border border-border rounded-[4px] p-4 flex flex-col gap-3">
               <span className="text-13 font-semibold text-text-primary">{t.name}</span>
               <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1"><span className="text-11 font-mono text-text-muted uppercase">Gross Winnings (₹)</span>
-                  <input type="number" className="input" onChange={(e) => updateFinish(t.id, { winningsGross: Number(e.target.value) })} /></label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-11 font-mono text-text-muted uppercase">Gross Winnings (₹)</span>
+                  <div className="flex items-center gap-3">
+                    <input type="number" className="input flex-1" onChange={(e) => updateFinish(t.id, { winningsGross: Number(e.target.value) })} />
+                    <label className="flex items-center gap-1.5 text-12 text-text-primary cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={bustedIds.has(t.id)}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setBustedIds((prev) => {
+                            const next = new Set(prev);
+                            checked ? next.add(t.id) : next.delete(t.id);
+                            return next;
+                          });
+                          if (checked) updateFinish(t.id, { itmYn: false, finalTableYn: false }); // can't have either — busting excludes ITM and the final table
+                        }}
+                      />
+                      Busted
+                    </label>
+                  </div>
+                </label>
                 <label className="flex flex-col gap-1"><span className="text-11 font-mono text-text-muted uppercase">Best Rank</span>
                   <input type="number" className="input" onChange={(e) => updateFinish(t.id, { bestRank: Number(e.target.value) })} /></label>
               </div>
               <div className="flex gap-4">
-                <label className="flex items-center gap-2 text-13 text-text-primary">
-                  <input type="checkbox" onChange={(e) => updateFinish(t.id, { itmYn: e.target.checked })} /> ITM</label>
-                <label className="flex items-center gap-2 text-13 text-text-primary">
-                  <input type="checkbox" onChange={(e) => updateFinish(t.id, { finalTableYn: e.target.checked })} /> Final Table</label>
+                <label className={`flex items-center gap-2 text-13 ${bustedIds.has(t.id) ? 'text-text-faint cursor-not-allowed' : 'text-text-primary'}`}>
+                  <input
+                    type="checkbox"
+                    checked={!!finishes[t.id]?.itmYn}
+                    disabled={bustedIds.has(t.id)}
+                    onChange={(e) => updateFinish(t.id, { itmYn: e.target.checked })}
+                  /> ITM</label>
+                <label className={`flex items-center gap-2 text-13 ${bustedIds.has(t.id) ? 'text-text-faint cursor-not-allowed' : 'text-text-primary'}`}>
+                  <input
+                    type="checkbox"
+                    checked={!!finishes[t.id]?.finalTableYn}
+                    disabled={bustedIds.has(t.id)}
+                    onChange={(e) => updateFinish(t.id, { finalTableYn: e.target.checked })}
+                  /> Final Table</label>
               </div>
+              <label className="flex flex-col gap-1">
+                <span className="text-11 font-mono text-text-muted uppercase">What happened? (optional)</span>
+                <textarea rows={2} className="input" onChange={(e) => updateFinish(t.id, { comments: e.target.value })} />
+              </label>
             </div>
           ))}
           <button type="button" onClick={() => setStep('mistakes')}
@@ -166,16 +272,24 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
               </button>
             ))}
           </div>
-          <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
-            {actions.filter((a) => a.dimension === activeTab).map((a) => (
-              <label key={a.id} className="flex items-start gap-3 p-2.5 rounded-[4px] hover:bg-surface-raised/40 cursor-pointer">
-                <input type="checkbox" className="mt-0.5" checked={!!selectedTags[a.id]} onChange={() => toggleTag(a.id)} />
-                <div className="flex flex-col">
-                  <span className="text-13 text-text-primary">{a.name}</span>
-                  {a.description && <span className="text-11 text-text-muted">{a.description}</span>}
-                </div>
-              </label>
-            ))}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-80 overflow-y-auto">
+            {taggableActions.filter((a) => a.dimension === activeTab).map((a) => {
+              const selected = !!selectedTags[a.id];
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => toggleTag(a.id)}
+                  title={a.description ?? undefined}
+                  className={`flex items-center justify-between gap-2 p-3 rounded-[6px] border text-left transition-colors cursor-pointer ${
+                    selected ? 'border-accent-steel bg-accent-steel/10' : 'border-border hover:border-text-faint hover:bg-surface-raised/40'
+                  }`}
+                >
+                  <span className="text-13 font-medium text-text-primary">{a.name}</span>
+                  {selected && <CheckCircle2 size={14} className="text-accent-steel shrink-0" />}
+                </button>
+              );
+            })}
           </div>
           <span className="text-12 text-text-muted">{Object.keys(selectedTags).length} selected</span>
           <button type="button" onClick={() => setStep('reflection')}
@@ -188,9 +302,19 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
       {step === 'reflection' && (
         <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
           <span className="text-14 font-medium text-text-primary">Be specific. This is for you as much as your coach.</span>
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setVoiceMode(false)} className={`text-12 px-2 py-1 rounded flex items-center gap-1 ${!voiceMode ? 'text-accent-steel' : 'text-text-muted'}`}><Type size={12} /> Text</button>
-            <button type="button" onClick={() => setVoiceMode(true)} className={`text-12 px-2 py-1 rounded flex items-center gap-1 ${voiceMode ? 'text-accent-steel' : 'text-text-muted'}`}><Mic size={12} /> Voice</button>
+          <div className="flex items-center gap-2">
+            <span className="text-12 px-2 py-1 rounded flex items-center gap-1 text-text-muted"><Type size={12} /> Text</span>
+            <button
+              type="button"
+              onClick={toggleVoice}
+              disabled={!speechSupported}
+              title={speechSupported ? (listening ? 'Stop voice input' : 'Voice input') : 'Voice input not supported in this browser'}
+              className={`text-12 px-2 py-1 rounded flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed ${
+                listening ? 'text-signal-risk' : 'text-text-muted hover:text-accent-steel'
+              }`}
+            >
+              {listening ? <MicOff size={12} /> : <Mic size={12} />} {listening ? 'Listening…' : 'Voice'}
+            </button>
           </div>
           <textarea rows={6} value={reflection} onChange={(e) => setReflection(e.target.value)} className="input" placeholder="What happened, and why?" />
           <button type="button" onClick={handleSubmit}
@@ -220,7 +344,7 @@ export default function SessionReview({ sessionId, playerId, onComplete }: Props
           </div>
           <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-2">
             <span className="text-11 text-text-muted uppercase tracking-wide">Results — measures outcome only, not skill</span>
-            <span className="font-display text-28 text-accent-bronze">{result.outcomeMedal}</span>
+            <span className={`font-display text-28 ${medalColorClass(result.outcomeMedal)}`}>{result.outcomeMedal}</span>
           </div>
           <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-2">
             <span className="text-12 font-mono text-text-muted uppercase">Verdict</span>

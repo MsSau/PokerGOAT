@@ -1,12 +1,8 @@
+import { Database } from '../types/database';
+
 // Matches the full dimension_type enum (6 labels) since execution_actions.dimension
 // and behavioral_dimension_assessments.dimension share this Postgres type.
-export type Dimension =
-  | 'DISCIPLINE_PROCESS'
-  | 'TECHNICAL_PLAY'
-  | 'MENTAL_GAME'
-  | 'LEARNING_IMPROVEMENT'
-  | 'PREPARATION'
-  | 'OUTCOMES';
+export type Dimension = Database['public']['Enums']['dimension_type'];
 
 // The Execution Profile (§10/§11) scores exactly these 4. PREPARATION and
 // OUTCOMES are scored elsewhere — Preparation Medal (§7) and Outcome Medal
@@ -20,13 +16,13 @@ export const EXECUTION_DIMENSIONS: Dimension[] = [
   'LEARNING_IMPROVEMENT',
 ];
 export type Rating = 'STRONG' | 'ACCEPTABLE' | 'WEAK' | 'CRITICAL';
-export type Medal = 'GOLD' | 'SILVER' | 'BRONZE' | 'NONE';
+export type Medal = Database['public']['Enums']['medal_type'];
 const BASE_POINTS: Record<string, number> = { MINOR: 1, MAJOR: 4, CRITICAL: 10 };
 
 export interface OccurrenceForScoring {
   execution_action_id: string;
   dimension: Dimension;
-  base_severity: 'MINOR' | 'MAJOR' | 'CRITICAL';
+  base_severity: Database['public']['Enums']['severity_type'];
   is_hard_gate: boolean;
   post_event_escalation_stage: number;
 }

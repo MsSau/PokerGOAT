@@ -8,7 +8,9 @@
 // any UI changes.
 
 import { supabase } from './supabase';
-import { getSlotRulesForLevel, SlotRule } from './brmrules';
+import { Json } from '../types/database';
+import { fetchSlotRulesForBRMLevel, SlotRule } from './brmRules';
+import { WeeklyBRMAssignmentRow } from './sessionContract';
 import {
   WeeklyGamePlan,
   WeeklyGamePlanPlayingDay,
@@ -17,14 +19,13 @@ import {
   WeeklyGamePlanCommitment,
   WeeklyGamePlanAmendment,
   PokerWeek,
-  WeeklyBRMAssignment,
   BRMLevel,
   FrameworkVersion,
 } from '../types';
 
 export interface WGPContext {
   pokerWeek: PokerWeek | null;
-  brmAssignment: WeeklyBRMAssignment | null;
+  brmAssignment: WeeklyBRMAssignmentRow | null;
   brmLevel: BRMLevel | null;
   frameworkVersion: FrameworkVersion | null;
   slotRules: SlotRule[] | null;
@@ -69,7 +70,7 @@ export async function resolveWGPContext(userId: string, coachId: string): Promis
     .maybeSingle();
   if (pwError) throw pwError;
 
-  let brmAssignment: WeeklyBRMAssignment | null = null;
+  let brmAssignment: WeeklyBRMAssignmentRow | null = null;
   let brmLevel: BRMLevel | null = null;
 
   if (pokerWeek) {
@@ -113,7 +114,7 @@ export async function resolveWGPContext(userId: string, coachId: string): Promis
     frameworkVersion = ver;
   }
 
-  const slotRules = brmLevel ? getSlotRulesForLevel(brmLevel.level_index) : null;
+  const slotRules = brmLevel ? await fetchSlotRulesForBRMLevel(brmLevel.id) : null;
 
   return { pokerWeek, brmAssignment, brmLevel, frameworkVersion, slotRules };
 }
@@ -254,7 +255,7 @@ export async function replaceCommitments(planId: string, rows: { commitment_text
  */
 export function validateWeeklyGamePlan(
   days: { planned_date: string; planned_session_allocation: number }[],
-  tournaments: { slot_number: number; intended_buy_ins: number }[],
+  tournaments: { slot_number: number; intended_buy_ins: number; planned_date: string; session: 1 | 2 }[],
   ctx: WGPContext,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -279,29 +280,47 @@ export function validateWeeklyGamePlan(
     if (!ctx.slotRules) {
       issues.push({
         field: 'slots',
-        message: `BRM Level ${ctx.brmLevel.level_index} slot rules are not yet configured by your coach.`,
+        message: `BRM Level ${ctx.brmLevel.level_index} table rules are not yet configured by your coach.`,
       });
     } else {
-      const usedSlots = new Set(tournaments.map((t) => t.slot_number));
-      if (usedSlots.size > ctx.slotRules.length) {
-        issues.push({
-          field: 'slots',
-          message: `BRM Level ${ctx.brmLevel.level_index} permits ${ctx.slotRules.length} distinct tournament slot(s); ${usedSlots.size} are planned.`,
-        });
-      }
-      tournaments.forEach((t, i) => {
-        const rule = ctx.slotRules!.find((s) => s.slotNumber === t.slot_number);
-        if (!rule) {
+      // Slot/table rules are a per-SESSION limit — how many tables the
+      // player can be registered in at once (§10: "Exceeded Simultaneous
+      // Table Limits") — not a week-wide total. Pooling every tournament
+      // planned across the whole week (as this used to do) would reject a
+      // perfectly valid plan of e.g. four separate single-table sessions
+      // just because they collectively touch 4 distinct slot numbers.
+      // Group by (day, session) and validate each sitting independently.
+      const bySession = new Map<string, typeof tournaments>();
+      tournaments.forEach((t) => {
+        const key = `${t.planned_date}|${t.session}`;
+        const list = bySession.get(key);
+        if (list) list.push(t);
+        else bySession.set(key, [t]);
+      });
+
+      bySession.forEach((sessionTournaments, key) => {
+        const [plannedDate, sessionLabel] = key.split('|');
+        const usedSlots = new Set(sessionTournaments.map((t) => t.slot_number));
+        if (usedSlots.size > ctx.slotRules!.length) {
           issues.push({
-            field: `tournament-${i}`,
-            message: `Slot ${t.slot_number} is not permitted at BRM Level ${ctx.brmLevel!.level_index}.`,
-          });
-        } else if (t.intended_buy_ins > rule.maxBuyIns) {
-          issues.push({
-            field: `tournament-${i}`,
-            message: `Slot ${t.slot_number} exceeds BRM Level ${ctx.brmLevel!.level_index} max of ${rule.maxBuyIns} buy-in(s).`,
+            field: `slots-${key}`,
+            message: `${plannedDate} Session ${sessionLabel}: BRM Level ${ctx.brmLevel!.level_index} permits ${ctx.slotRules!.length} distinct tournament table(s) at once; ${usedSlots.size} are planned.`,
           });
         }
+        sessionTournaments.forEach((t, i) => {
+          const rule = ctx.slotRules!.find((s) => s.slotNumber === t.slot_number);
+          if (!rule) {
+            issues.push({
+              field: `tournament-${key}-${i}`,
+              message: `${plannedDate} Session ${sessionLabel}, Table ${t.slot_number} is not permitted at BRM Level ${ctx.brmLevel!.level_index}.`,
+            });
+          } else if (t.intended_buy_ins > rule.maxBuyIns) {
+            issues.push({
+              field: `tournament-${key}-${i}`,
+              message: `${plannedDate} Session ${sessionLabel}, Table ${t.slot_number} exceeds BRM Level ${ctx.brmLevel!.level_index} max of ${rule.maxBuyIns} buy-in(s).`,
+            });
+          }
+        });
       });
     }
   }
@@ -324,10 +343,10 @@ export async function appendAmendment(
   planId: string,
   playerId: string,
   amendmentType: string,
-  originalReference: unknown,
-  proposedNewValue: unknown,
+  originalReference: Json,
+  proposedNewValue: Json,
   reason: string,
-  validationResult: unknown,
+  validationResult: Json,
   isViolation: boolean,
 ) {
   const { data, error } = await supabase

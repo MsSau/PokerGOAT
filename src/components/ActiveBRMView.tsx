@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { UserRole, BRMConfiguration, BRMConfigVersion, BRMBankrollBand, BRMLevel } from '../types';
 import { getActiveBRM, resolveCoachId } from '../lib/supabase';
-import { Lock, ShieldCheck, DollarSign, ListCollapse, Award, TableProperties } from 'lucide-react';
+import { Lock, ShieldCheck, DollarSign, ListCollapse, Award, TableProperties, AlertTriangle } from 'lucide-react';
 import { formatCurrency } from '../lib/utils';
+import { useAsync } from '../lib/useAsync';
 
 interface ActiveBRMViewProps {
   userId: string;
@@ -10,30 +11,9 @@ interface ActiveBRMViewProps {
 }
 
 export default function ActiveBRMView({ userId, role }: ActiveBRMViewProps) {
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<{
-    config: BRMConfiguration;
-    version: BRMConfigVersion;
-    bands: BRMBankrollBand[];
-    levels: BRMLevel[];
-  } | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const fetchBRM = async () => {
-      setLoading(true);
-      const coachId = await resolveCoachId(userId, role);
-      const result = await getActiveBRM(coachId);
-      if (active) {
-        setData(result);
-        setLoading(false);
-      }
-    };
-
-    fetchBRM();
-    return () => {
-      active = false;
-    };
+  const { data, loading, error } = useAsync(async () => {
+    const coachId = await resolveCoachId(userId, role);
+    return getActiveBRM(coachId);
   }, [userId, role]);
 
   if (loading) {
@@ -41,6 +21,15 @@ export default function ActiveBRMView({ userId, role }: ActiveBRMViewProps) {
       <div className="flex flex-col items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
         <span className="w-6 h-6 border-2 border-accent-steel border-t-transparent rounded-full animate-spin"></span>
         <span className="text-12 font-mono text-text-muted mt-3">Loading active BRM protocol from database...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-surface border border-signal-risk/30 rounded-[6px] p-6 flex items-start gap-3">
+        <AlertTriangle size={18} className="text-signal-risk shrink-0 mt-0.5" />
+        <p className="text-14 text-text-primary leading-relaxed">{error}</p>
       </div>
     );
   }
@@ -93,7 +82,7 @@ export default function ActiveBRMView({ userId, role }: ActiveBRMViewProps) {
           <div className="bg-ink/40 border border-border p-4 rounded-[6px] flex flex-col gap-1">
             <span className="text-12 font-mono text-text-muted uppercase">VERSION & ACTIVATION DATE</span>
             <span className="text-14 font-mono font-medium text-text-primary">
-              v{version.version_number}.0 (Generated {new Date(version.created_at).toLocaleDateString()})
+              v{version.version_number}.0 (Generated {version.created_at ? new Date(version.created_at).toLocaleDateString() : '—'})
             </span>
           </div>
         </div>
@@ -169,10 +158,10 @@ export default function ActiveBRMView({ userId, role }: ActiveBRMViewProps) {
                     </td>
                     {/* Financial figures strictly formatted in neutral text-primary and font-mono */}
                     <td className="p-3 text-right font-mono text-text-primary font-medium">
-                      {formatCurrency(lvl.max_tournament_buy_in)}
+                      {lvl.max_tournament_buy_in !== null ? formatCurrency(lvl.max_tournament_buy_in) : '—'}
                     </td>
                     <td className="p-3 text-right font-mono text-text-primary font-medium">
-                      {formatCurrency(lvl.max_session_exposure)}
+                      {lvl.max_session_exposure !== null ? formatCurrency(lvl.max_session_exposure) : '—'}
                     </td>
                   </tr>
                 ))}
