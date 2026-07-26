@@ -1,7 +1,11 @@
 -- Workflow & Trust-Boundary Audit, findings C4 and H7. Body-only change,
--- same CREATE OR REPLACE reasoning as this repo's other body-only
--- perform_end_session migrations — full cumulative body below, layered on
--- top of 20260724150000.
+-- rebased on top of 20260724170000 (the coach_directives execution_action_id
+-- + retracted_at scoping) rather than the older snapshot this migration was
+-- originally drafted against — that draft's v_prior_directive WHERE clause
+-- would otherwise have silently reverted that scoping back to "any
+-- directive counts toward any action" via CREATE OR REPLACE. Only the C4
+-- and H7 changes below are new; everything else in the function is
+-- unchanged from 20260724170000.
 --
 -- C4 (BRM-compliance trust boundary): v_brm_compliant was derived entirely
 -- from tournament_entries.status = 'NON_COMPLIANT', and that status —
@@ -203,14 +207,15 @@ BEGIN
         RAISE EXCEPTION 'perform_end_session: session % not found', p_session_id;
     END IF;
 
-    -- Ownership check: only the player who owns this session may finalize it.
+    -- Ownership check (previously absent — the finding this migration
+    -- rectifies): only the player who owns this session may finalize it.
     IF v_player_id <> auth.uid() THEN
         RAISE EXCEPTION 'perform_end_session: not authorized for this session';
     END IF;
 
-    -- Idempotency guard: a double-submitted or retried finalization call
-    -- must not silently create a second verdict/assessment set for the
-    -- same session.
+    -- Idempotency guard (previously absent): a double-submitted or retried
+    -- finalization call must not silently create a second verdict/
+    -- assessment set for the same session.
     IF v_session_status = 'FINALIZED' THEN
         RAISE EXCEPTION 'perform_end_session: session already finalized';
     END IF;
@@ -485,12 +490,16 @@ BEGIN
             )
         ) INTO v_prior_critical_recent;
 
-        -- TBD (matches escalationEngine.ts's own comment): coach_directives
-        -- has no execution_action_id column yet, so any directive counts
-        -- as "referencing this action" — tighten once that FK exists.
+        -- coach_directives is scoped to the specific action it names
+        -- (20260724160000) and excludes retracted ones (this migration) —
+        -- a retracted directive no longer counts as "the coach already
+        -- flagged this" for escalation purposes.
         SELECT EXISTS (
             SELECT 1 FROM coach_directives
-            WHERE player_id = v_player_id AND created_at < v_occ.occurred_at
+            WHERE player_id = v_player_id
+              AND execution_action_id = v_occ.execution_action_id
+              AND created_at < v_occ.occurred_at
+              AND retracted_at IS NULL
         ) INTO v_prior_directive;
 
         SELECT EXISTS (
@@ -579,7 +588,7 @@ BEGIN
         -- §13 "Violations and repeat offences" tier — a track reaching
         -- Critical Escalation Stage (>=5) this session is tracked here so
         -- classification below can treat it as its own severity signal,
-        -- distinct from hard-gate violations (see 20260724150000's header).
+        -- distinct from hard-gate violations (see this migration's header).
         IF v_new_stage >= 5 THEN
             v_any_critical_escalation := true;
         END IF;
@@ -690,7 +699,8 @@ BEGIN
     END IF;
 
     -- 5. Verdict classification + headline (§13) — verdictEngine.ts's
-    -- classifyVerdict/buildHeadline, ported verbatim. Never reasons from
+    -- classifyVerdict/buildHeadline, ported verbatim (see this migration's
+    -- header for the two branches new to this pass). Never reasons from
     -- P&L sign first: hard gate / Critical Escalation is checked before
     -- positive/negative, and Preparation only ever narrows a WIN down to
     -- MIXED_SESSION, never independently worsens a classification.
@@ -760,8 +770,8 @@ BEGIN
     -- v_exec_assessment_id / v_outcome_assessment_id until this function
     -- generates them above — fall back to resolving by entity_type here
     -- whenever the client leaves it unset. p_verdict_evidence remains
-    -- client-supplied prose (see 20260721040000's header) — it describes
-    -- the deterministic facts computed above, it does not decide them.
+    -- client-supplied prose (see migration header) — it describes the
+    -- deterministic facts computed above, it does not decide them.
     INSERT INTO verdict_evidence_items (id, verdict_id, section, claim_text, confidence_level, evidence_entity_type, evidence_entity_id, created_at)
     SELECT "gen_random_uuid"(), v_verdict_id,
            e->>'section', e->>'claim_text', e->>'confidence_level',
