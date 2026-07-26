@@ -1,36 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { UserRole, PerformanceFramework, FrameworkVersion } from '../types';
 import { getActiveFramework, resolveCoachId } from '../lib/supabase';
-import { Lock, ShieldCheck, Sparkles, Calendar, BookOpen, Layers } from 'lucide-react';
+import { Lock, ShieldCheck, Sparkles, Calendar, BookOpen, Layers, AlertTriangle } from 'lucide-react';
+import { useAsync } from '../lib/useAsync';
+import { PlayerId } from '../types/ids';
 
 interface ActiveFrameworkViewProps {
-  userId: string;
+  userId: PlayerId;
   role: UserRole;
 }
 
 export default function ActiveFrameworkView({ userId, role }: ActiveFrameworkViewProps) {
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<{
-    framework: PerformanceFramework;
-    version: FrameworkVersion;
-  } | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const fetchFramework = async () => {
-      setLoading(true);
-      const coachId = await resolveCoachId(userId, role);
-      const result = await getActiveFramework(coachId);
-      if (active) {
-        setData(result);
-        setLoading(false);
-      }
-    };
-
-    fetchFramework();
-    return () => {
-      active = false;
-    };
+  const { data, loading, error } = useAsync(async () => {
+    const coachId = await resolveCoachId(userId, role);
+    return getActiveFramework(coachId);
   }, [userId, role]);
 
   if (loading) {
@@ -38,6 +21,15 @@ export default function ActiveFrameworkView({ userId, role }: ActiveFrameworkVie
       <div className="flex flex-col items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
         <span className="w-6 h-6 border-2 border-accent-steel border-t-transparent rounded-full animate-spin"></span>
         <span className="text-12 font-mono text-text-muted mt-3">Loading active framework from database...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-surface border border-signal-risk/30 rounded-[6px] p-6 flex items-start gap-3">
+        <AlertTriangle size={18} className="text-signal-risk shrink-0 mt-0.5" />
+        <p className="text-14 text-text-primary leading-relaxed">{error}</p>
       </div>
     );
   }
@@ -103,7 +95,7 @@ export default function ActiveFrameworkView({ userId, role }: ActiveFrameworkVie
               <Calendar size={12} className="text-text-muted" /> PROTOCOL PERIOD
             </span>
             <span className="text-14 font-mono font-medium text-text-primary">
-              {version.start_date} <span className="text-text-faint">→</span> {version.end_date}
+              {version.start_date ?? '—'} <span className="text-text-faint">→</span> {version.end_date ?? '—'}
             </span>
           </div>
         </div>
@@ -118,54 +110,6 @@ export default function ActiveFrameworkView({ userId, role }: ActiveFrameworkVie
             <p className="text-14 text-text-primary leading-relaxed whitespace-pre-wrap font-sans font-medium">
               {version.primary_objective}
             </p>
-          </div>
-        </div>
-
-        {/* Supporting Guidelines check items */}
-        <div className="flex flex-col gap-3">
-          <span className="text-12 font-mono text-text-muted uppercase tracking-wider">
-            MANDATED PREPARATION PROTOCOLS
-          </span>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="p-4 bg-surface-raised border border-border rounded-[4px] flex gap-3">
-              <div className="w-5 h-5 rounded-full bg-accent-steel/15 flex items-center justify-center shrink-0 border border-accent-steel/30 text-accent-steel text-11 font-mono">
-                1
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-13 font-semibold text-text-primary">Sleep & Physiological Check</span>
-                <span className="text-12 text-text-muted">Player cannot boot session without minimum 6.5 hours of tracked rest.</span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-surface-raised border border-border rounded-[4px] flex gap-3">
-              <div className="w-5 h-5 rounded-full bg-accent-steel/15 flex items-center justify-center shrink-0 border border-accent-steel/30 text-accent-steel text-11 font-mono">
-                2
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-13 font-semibold text-text-primary">Big Blind Range Review</span>
-                <span className="text-12 text-text-muted">Mandatory 10-minute review of BB calling and 3-bet ranges prior to launch.</span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-surface-raised border border-border rounded-[4px] flex gap-3">
-              <div className="w-5 h-5 rounded-full bg-accent-steel/15 flex items-center justify-center shrink-0 border border-accent-steel/30 text-accent-steel text-11 font-mono">
-                3
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-13 font-semibold text-text-primary">Breach Auto-Stop Trigger</span>
-                <span className="text-12 text-text-muted">Immediate session shutdown upon loss of 2 full buy-ins or $500 total exposure.</span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-surface-raised border border-border rounded-[4px] flex gap-3">
-              <div className="w-5 h-5 rounded-full bg-accent-steel/15 flex items-center justify-center shrink-0 border border-accent-steel/30 text-accent-steel text-11 font-mono">
-                4
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-13 font-semibold text-text-primary">Active Tactical Leak Tag</span>
-                <span className="text-12 text-text-muted">Tagging hands with "SB-Def" when calling aggressive button ranges.</span>
-              </div>
-            </div>
           </div>
         </div>
 

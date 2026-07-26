@@ -1,4 +1,7 @@
-export type UserRole = 'PLAYER' | 'COACH';
+import { Database } from './types/database';
+import { SessionId, SessionContractId } from './types/ids';
+
+export type UserRole = Database['public']['Enums']['role_type'];
 
 export type PlayerRoute =
   | 'dashboard'
@@ -7,12 +10,11 @@ export type PlayerRoute =
   | 'play'
   | 'log'
   | 'progress'
-  | 'verdicts';
+  | 'verdicts'
+  | 'interventions';
 
 export type CoachRoute =
   | 'brief'
-  | 'player'
-  | 'verdicts'
   | 'behavioral'
   | 'framework'
   | 'brm'
@@ -20,112 +22,55 @@ export type CoachRoute =
   | 'escalation'
   | 'interventions';
 
-export interface UserProfile {
-  id: string;
-  role: UserRole;
-  coach_id?: string | null;
-  timezone?: string;
-  email: string;
-}
-
 export interface ActiveSession {
+  id: SessionId | null;           // sessions.id — needed by TournamentLog
+  contractId: SessionContractId | null;   // sessions.contract_id
   isActive: boolean;
+  status: 'NONE' | 'ACTIVE' | 'REVIEW_PENDING' | 'FINALIZED';
   startTime: string | null;
   sessionLimit: number;
   dayLimit: number;
   weekLimit: number;
-  stopLossConsumed: number; // in dollars
-  confidenceScore: number; // percentage
+  stopLossConsumed: number;
+  confidenceScore: number;
 }
 
-// Supabase Database Schemas as specified in the guidelines
-export interface PerformanceFramework {
-  id: string;
-  coach_id: string;
-  status: 'Active' | 'Inactive' | string;
-}
+// Row types mirroring Supabase tables, derived from the generated schema so
+// they can never drift from the real column list/nullability (see
+// src/types/database.ts — auto-generated, don't hand-edit). Every one of
+// these is populated by a `select('*')` (or equivalent full column list) —
+// narrower selects get their own `Pick<>` type co-located with the fetcher
+// that uses them (e.g. sessionContract.ts's *Summary types) rather than
+// living here.
+export type PerformanceFramework = Database['public']['Tables']['performance_frameworks']['Row'];
+export type FrameworkVersion = Database['public']['Tables']['framework_versions']['Row'];
+export type BRMConfiguration = Database['public']['Tables']['brm_configurations']['Row'];
+export type BRMConfigVersion = Database['public']['Tables']['brm_config_versions']['Row'];
+export type BRMBankrollBand = Database['public']['Tables']['brm_bankroll_bands']['Row'];
+export type BRMLevel = Database['public']['Tables']['brm_levels']['Row'];
+export type BRMLevelSlotRule = Database['public']['Tables']['brm_level_slot_rules']['Row'];
 
-export interface FrameworkVersion {
-  id: string;
-  framework_id: string;
-  version_number: number;
-  primary_objective: string;
-  start_date: string;
-  end_date: string;
-  is_activated: boolean;
-  created_at: string;
-}
+export type WGPStatus = Database['public']['Enums']['wgp_status'];
 
-export interface BRMConfiguration {
-  id: string;
-  coach_id: string;
-}
+export type PokerWeek = Database['public']['Tables']['poker_weeks']['Row'];
+export type WeeklyGamePlan = Database['public']['Tables']['weekly_game_plans']['Row'];
+export type WeeklyGamePlanPlayingDay = Database['public']['Tables']['weekly_game_plan_playing_days']['Row'];
+export type WeeklyGamePlanTournament = Database['public']['Tables']['weekly_game_plan_tournaments']['Row'];
+export type WeeklyGamePlanConditionalTournament = Database['public']['Tables']['weekly_game_plan_conditional_tournaments']['Row'];
+export type WeeklyGamePlanCommitment = Database['public']['Tables']['weekly_game_plan_commitments']['Row'];
+export type WeeklyGamePlanAmendment = Database['public']['Tables']['weekly_game_plan_amendments']['Row'];
 
-export interface BRMConfigVersion {
-  id: string;
-  config_id: string;
-  version_number: number;
-  is_activated: boolean;
-  created_at: string;
-}
+// Taxonomy (§10), Escalation (§12), and Interventions (§16) coach config screens.
+export type ExecutionTaxonomy = Database['public']['Tables']['execution_taxonomies']['Row'];
+export type TaxonomyVersion = Database['public']['Tables']['taxonomy_versions']['Row'];
+export type ExecutionAction = Database['public']['Tables']['execution_actions']['Row'];
+export type ExecutionActionStatus = Database['public']['Enums']['execution_action_status'];
 
-export interface BRMBankrollBand {
-  id: string;
-  version_id: string;
-  min_bankroll: number;
-  max_bankroll: number;
-  session_stop_loss: number;
-  day_stop_loss: number;
-  week_stop_loss: number;
-  level_index: number;
-}
+export type EscalationRuleVersion = Database['public']['Tables']['escalation_rule_versions']['Row'];
+export type EscalationTrack = Database['public']['Tables']['escalation_tracks']['Row'];
+export type EscalationEvent = Database['public']['Tables']['escalation_events']['Row'];
 
-export interface BRMLevel {
-  id: string;
-  version_id: string;
-  level_index: number;
-  max_tournament_buy_in: number;
-  max_session_exposure: number;
-}
-
-export interface Session {
-  id: string;
-  player_id: string;
-  contract_id?: string;
-  status: 'ACTIVE' | 'ENDED' | string;
-  start_time: string;
-  end_time?: string;
-}
-
-export interface Verdict {
-  id: string;
-  session_id: string;
-  headline: string;
-}
-
-export interface ExecutionAssessment {
-  id: string;
-  session_id: string;
-  system_execution_medal: string;
-}
-
-export interface OutcomeAssessment {
-  id: string;
-  session_id: string;
-  final_session_net_pnl: number;
-  system_outcome_medal: string;
-}
-
-export interface WeeklyBRMAssignment {
-  id: string;
-  player_id: string;
-  brm_level_id: string;
-  week_stop_loss_snapshot: number;
-  session_stop_loss_snapshot: number;
-  day_stop_loss_snapshot: number;
-  locked_at: string;
-  brm_levels?: {
-    level_index: number;
-  };
-}
+export type InterventionLibraryItem = Database['public']['Tables']['intervention_library']['Row'];
+export type InterventionCandidate = Database['public']['Tables']['intervention_candidates']['Row'];
+export type InterventionAssignment = Database['public']['Tables']['intervention_assignments']['Row'];
 

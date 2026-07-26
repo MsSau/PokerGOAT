@@ -1,11 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CoachRoute, UserRole } from '../types';
-import ActiveFrameworkView from './ActiveFrameworkView';
-import ActiveBRMView from './ActiveBRMView';
+import FrameworkConfigView from './FrameworkConfigView';
+import BRMConfigView from './BRMConfigView';
+import TaxonomyConfigView from './TaxonomyConfigView';
+import EscalationConfigView from './EscalationConfigView';
+import InterventionsConfigView, { AssignmentPrefill } from './InterventionsConfigView';
+import CoachBriefView from './CoachBriefView';
+import BehavioralProfileView from './BehavioralProfileView';
+import { fetchCoachRoster } from '../lib/coachRoster';
+import { supabase, fetchUnclaimedPlayers, claimPlayers, UnclaimedPlayer } from '../lib/supabase';
+import { useAsync } from '../lib/useAsync';
+import { PlayerId, CoachId, ExecutionActionId, asCoachId, asPlayerId } from '../types/ids';
 import {
   FileText,
-  Users,
-  Award,
   TrendingUp,
   BookOpen,
   DollarSign,
@@ -18,14 +25,13 @@ import {
   LogOut,
   User,
   ShieldAlert,
-  ArrowRight,
   CheckSquare,
   Sparkles,
-  Inbox
+  UserPlus,
 } from 'lucide-react';
 
 interface CoachShellProps {
-  userId: string;
+  userId: PlayerId;
   userEmail: string;
   onLogout: () => void;
   onSwitchRole: (role: UserRole) => void;
@@ -37,32 +43,53 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Selection states for demo interactivity
-  const [selectedPlayer, setSelectedPlayer] = useState<string>('Alex P.');
+  // userId is NOT reliably a real coach's id: the "Switch to Coach Shell"
+  // sandbox control (App.tsx's pokergoat_role_override, PRD-intentional dev
+  // affordance) can render this shell for a user whose actual profiles.role
+  // is PLAYER — in that case the real coach is that player's own coach_id,
+  // not userId itself. Resolve from the DB rather than assuming.
+  const { data: coachId } = useAsync(async () => {
+    const { data: profile, error } = await supabase.from('profiles').select('role, coach_id').eq('id', userId).single();
+    if (error) throw error;
+    return profile.role === 'COACH' ? asCoachId(userId) : profile.coach_id ? asCoachId(profile.coach_id) : null;
+  }, [userId]);
 
-  // Mock data for Coach Briefing (to let them "understand what changed within 2-3 minutes")
-  const alertSummary = {
-    unreviewedVerdicts: 3,
-    criticalViolations: 2,
-    activePlayers: 4,
-    escalatedInterventions: 1,
-  };
+  // Looked up by coachId directly (not userId) so this is right in both
+  // cases above — the real coach's own profile, not the sandbox-override
+  // player's.
+  const { data: coachName } = useAsync(async () => {
+    if (!coachId) return null;
+    const { data, error } = await supabase.from('profiles').select('display_name').eq('id', coachId).single();
+    if (error) throw error;
+    return data.display_name;
+  }, [coachId]);
 
-  const criticalIssues: any[] = [];
+  const { data: roster, loading: rosterLoading, error: rosterError, reload: reloadRoster } = useAsync(
+    () => (coachId ? fetchCoachRoster(coachId) : Promise.resolve([])),
+    [coachId]
+  );
 
+  const [selectedPlayerId, setSelectedPlayerId] = useState<PlayerId | null>(null);
+  useEffect(() => {
+    if (!selectedPlayerId && roster && roster.length > 0) {
+      setSelectedPlayerId(roster[0].playerId);
+    }
+  }, [roster, selectedPlayerId]);
 
-  const playersList = [
-    { name: 'Alex P.', role: 'PLAYER', bankroll: '$18,240.00', processScore: '92%', lastActive: '1 hr ago', status: 'VIOLATION' },
-    { name: 'Juliet K.', role: 'PLAYER', bankroll: '$34,500.00', processScore: '72%', lastActive: '3 hrs ago', status: 'WARNING' },
-    { name: 'Marcus V.', role: 'PLAYER', bankroll: '$9,120.00', processScore: '89%', lastActive: 'In Session', status: 'COMPLIANT' },
-    { name: 'Sam R.', role: 'PLAYER', bankroll: '$12,400.00', processScore: '96%', lastActive: '1 day ago', status: 'COMPLIANT' },
-  ];
+  // Links the Escalation and Interventions tabs: clicking "Assign
+  // Intervention" next to a track's Override control (EscalationConfigView)
+  // sets this and switches tabs, so Interventions > Assignments opens with
+  // that player + track already selected instead of making the coach
+  // re-pick both there.
+  const [assignPrefill, setAssignPrefill] = useState<AssignmentPrefill | null>(null);
+  function handleAssignIntervention(playerId: PlayerId, executionActionId: ExecutionActionId) {
+    setAssignPrefill({ playerId, executionActionId, token: Date.now() });
+    setActiveTab('interventions');
+  }
 
   // Navigation Items
   const navItems = [
     { id: 'brief' as CoachRoute, label: 'Brief', icon: FileText, sub: 'Weekly Coach Brief' },
-    { id: 'player' as CoachRoute, label: 'Player', icon: Users, sub: 'Roster & Focus Grid' },
-    { id: 'verdicts' as CoachRoute, label: 'Verdicts', icon: Award, sub: 'Decision Manager' },
     { id: 'behavioral' as CoachRoute, label: 'Behavioral', icon: TrendingUp, sub: 'Taxonomy & Trend' },
     { id: 'framework' as CoachRoute, label: 'Framework', icon: BookOpen, sub: 'Action Guides' },
     { id: 'brm' as CoachRoute, label: 'BRM', icon: DollarSign, sub: 'Bankroll & Stop Loss' },
@@ -212,11 +239,11 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
               Portal:
             </span>
             <span className="text-14 font-sans font-semibold text-text-primary">
-              Julian's Coaching Wing
+              {coachName ? `Coach ${coachName}'s Coaching Wing` : "Coach's Coaching Wing"}
             </span>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-4 shrink-0">
             {/* Global Search */}
             <div className="relative max-w-xs">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-faint" />
@@ -228,6 +255,10 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
                 className="bg-ink border border-border focus:border-accent-steel focus:outline-none rounded-[6px] pl-8 pr-3 py-1.5 text-12 text-text-primary placeholder:text-text-faint transition-colors w-64 font-sans"
               />
             </div>
+
+            <span className="text-12 text-text-muted italic tracking-tight hidden lg:inline">
+              Build your edge. Protect your bankroll. Master your process.
+            </span>
           </div>
         </header>
 
@@ -245,9 +276,7 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
                 {activeTab === 'brief' ? 'Weekly Coach Brief' : activeTab === 'brm' ? 'Bankroll Management (BRM)' : activeTab}
               </h1>
               <p className="text-14 text-text-muted mt-1 leading-relaxed">
-                {activeTab === 'brief' && 'High-density summary of player alerts, stop-loss breaches, and pending interventions over the past 48 hours.'}
-                {activeTab === 'player' && 'Roster directory, performance benchmarks, active contracts, and streak records.'}
-                {activeTab === 'verdicts' && 'Assign critique verdicts, review player pledges, and log structural deviations.'}
+                {activeTab === 'brief' && 'Per-player Weekly Coach Brief — preparation, execution, outcome, behavioral trend, and coaching history in one document.'}
                 {activeTab === 'behavioral' && 'Behavioral profiles, qualitative ratings, trend models, and radial scoreboards.'}
                 {activeTab === 'framework' && 'Mental prep frameworks, checklists, and action-guide manuals.'}
                 {activeTab === 'brm' && 'Approve bankroll limits, set stop-loss margins, and coordinate stake movements.'}
@@ -257,293 +286,170 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
               </p>
             </div>
 
+            {coachId && <UnclaimedPlayersPanel coachId={coachId} onClaimed={reloadRoster} />}
+
             {/* DYNAMIC VIEWPORTS */}
             {activeTab === 'brief' && (
               <div className="flex flex-col gap-6 animate-fade-in">
-                {/* A. Quick High-Density Summary Cards ("Understand what changed within 2-3 minutes") */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div className="bg-surface border border-border p-4 rounded-[6px] flex flex-col gap-1.5">
-                    <span className="text-[11px] font-mono text-text-muted uppercase tracking-wider">
-                      CRITICAL VIOLATIONS
-                    </span>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-28 font-mono font-medium text-signal-risk">
-                        {alertSummary.criticalViolations}
-                      </span>
-                      <span className="text-11 font-mono text-signal-risk uppercase">● Urgent</span>
-                    </div>
-                    <span className="text-[11px] text-text-faint mt-1">Requires immediate lock reviews</span>
+                {rosterLoading && (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
                   </div>
-
-                  <div className="bg-surface border border-border p-4 rounded-[6px] flex flex-col gap-1.5">
-                    <span className="text-[11px] font-mono text-text-muted uppercase tracking-wider">
-                      UNREVIEWED VERDICTS
-                    </span>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-28 font-mono font-medium text-signal-caution">
-                        {alertSummary.unreviewedVerdicts}
-                      </span>
-                      <span className="text-11 font-mono text-text-muted">Pending</span>
-                    </div>
-                    <span className="text-[11px] text-text-faint mt-1">Sessions needing feedback</span>
+                )}
+                {rosterError && (
+                  <div className="bg-surface border border-signal-risk/30 rounded-[6px] p-6 text-14 text-signal-risk">{rosterError}</div>
+                )}
+                {!rosterLoading && !rosterError && (!roster || roster.length === 0) && (
+                  <div className="bg-surface border border-border rounded-[6px] p-8 text-center text-14 text-text-muted">
+                    No players in your roster yet.
                   </div>
-
-                  <div className="bg-surface border border-border p-4 rounded-[6px] flex flex-col gap-1.5">
-                    <span className="text-[11px] font-mono text-text-muted uppercase tracking-wider">
-                      ESCALATED PROTOCOLS
-                    </span>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-28 font-mono font-medium text-signal-risk">
-                        {alertSummary.escalatedInterventions}
-                      </span>
-                      <span className="text-11 font-mono text-signal-risk">Locked</span>
-                    </div>
-                    <span className="text-[11px] text-text-faint mt-1">Player currently in review lock</span>
-                  </div>
-
-                  <div className="bg-surface border border-border p-4 rounded-[6px] flex flex-col gap-1.5">
-                    <span className="text-[11px] font-mono text-text-muted uppercase tracking-wider">
-                      ACTIVE SESSIONS LIVE
-                    </span>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-28 font-mono font-medium text-signal-process">
-                        {alertSummary.activePlayers}
-                      </span>
-                      <span className="text-11 font-mono text-signal-process uppercase animate-pulse">● Live</span>
-                    </div>
-                    <span className="text-[11px] text-text-faint mt-1">Monitoring table risk</span>
-                  </div>
-                </div>
-
-                {/* B. Highly structured, dense alert feed */}
-                <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                  <div className="flex justify-between items-center border-b border-border pb-3">
-                    <h2 className="text-14 font-semibold uppercase tracking-wider text-text-primary">
-                      CRITICAL EVENTS FEED (PAST 48 HOURS)
-                    </h2>
-                    <span className="text-12 font-mono text-text-muted">Sorted by severity</span>
-                  </div>
-
-                  <div className="flex flex-col gap-3">
-                    {criticalIssues.map((issue) => (
-                      <div 
-                        key={issue.id} 
-                        className={`flex flex-col md:flex-row md:items-center justify-between p-3.5 bg-surface-raised border rounded-[4px] gap-3 ${
-                          issue.severity === 'RISK' ? 'border-signal-risk/20 bg-signal-risk/5' : 'border-signal-caution/20 bg-signal-caution/5'
-                        }`}
+                )}
+                {!rosterLoading && roster && roster.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <label className="text-12 font-mono text-text-muted uppercase tracking-wider">Player</label>
+                      <select
+                        value={selectedPlayerId ?? ''}
+                        onChange={(e) => setSelectedPlayerId(asPlayerId(e.target.value))}
+                        className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze"
                       >
-                        <div className="flex items-start gap-3">
-                          {issue.severity === 'RISK' ? (
-                            <AlertTriangle size={18} className="text-signal-risk shrink-0 mt-0.5" />
-                          ) : (
-                            <Activity size={18} className="text-signal-caution shrink-0 mt-0.5" />
-                          )}
-                          <div className="flex flex-col gap-0.5">
-                            <span className="text-14 font-medium text-text-primary">
-                              {issue.player} — {issue.issue}
-                            </span>
-                            <span className="text-12 text-text-muted">
-                              Impact assessment required. Click to view full Hand Logs.
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Money figures neutrally styled (Hard Rule) */}
-                        <div className="flex items-center gap-3 self-end md:self-auto">
-                          <span className="font-mono text-14 text-text-primary bg-ink border border-border/80 px-2.5 py-1 rounded">
-                            {issue.metric}
-                          </span>
-                          <button 
-                            type="button" 
-                            className="p-1 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
-                            title="Open Verdict Creator"
-                            onClick={() => setActiveTab('verdicts')}
-                          >
-                            <ArrowRight size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* C. Roster quick scan */}
-                <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                  <h2 className="text-14 font-semibold uppercase tracking-wider text-text-primary border-b border-border pb-3">
-                    COACH WING ROSTER ACTIVE SNAPSHOT
-                  </h2>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-border bg-surface-raised text-11 font-mono text-text-muted">
-                          <th className="p-3">PLAYER</th>
-                          <th className="p-3">BANKROLL (NEUTRAL)</th>
-                          <th className="p-3">PROCESS FIDELITY</th>
-                          <th className="p-3">LAST LOGGED ACTIVITY</th>
-                          <th className="p-3">STATUS</th>
-                        </tr>
-                      </thead>
-                      <tbody className="text-12 font-sans text-text-primary">
-                        {playersList.map((player) => (
-                          <tr key={player.name} className="border-b border-border/50 hover:bg-surface-raised/30 transition-colors">
-                            <td className="p-3 font-semibold">{player.name}</td>
-                            <td className="p-3 font-mono">{player.bankroll}</td>
-                            <td className="p-3">
-                              <span className={`font-mono ${
-                                parseInt(player.processScore) < 80 ? 'text-signal-risk' : 'text-signal-process'
-                              }`}>
-                                {player.processScore}
-                              </span>
-                            </td>
-                            <td className="p-3 text-text-muted font-mono">{player.lastActive}</td>
-                            <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                                player.status === 'VIOLATION' 
-                                  ? 'bg-signal-risk/10 border border-signal-risk/30 text-signal-risk' 
-                                  : player.status === 'WARNING'
-                                  ? 'bg-signal-caution/10 border border-signal-caution/30 text-signal-caution'
-                                  : 'bg-signal-process/10 border border-signal-process/30 text-signal-process'
-                              }`}>
-                                {player.status}
-                              </span>
-                            </td>
-                          </tr>
+                        {roster.map((p) => (
+                          <option key={p.playerId} value={p.playerId}>{p.displayName}</option>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'player' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Player Wing Directory</span>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  {playersList.map((pl) => (
-                    <button
-                      key={pl.name}
-                      type="button"
-                      onClick={() => setSelectedPlayer(pl.name)}
-                      className={`p-4 rounded border text-left flex flex-col gap-2 transition-all ${
-                        selectedPlayer === pl.name 
-                          ? 'bg-surface-raised border-accent-bronze text-text-primary' 
-                          : 'bg-surface border-border text-text-muted hover:border-text-faint'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center">
-                        <span className="text-14 font-semibold text-text-primary">{pl.name}</span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink border border-border">
-                          {pl.role}
-                        </span>
-                      </div>
-                      <div className="flex flex-col font-mono text-12">
-                        <span>Bankroll: {pl.bankroll}</span>
-                        <span>Fidelity: {pl.processScore}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="p-6 bg-surface-raised border border-border rounded mt-4">
-                  <h3 className="text-14 font-semibold text-text-primary border-b border-border pb-2 mb-3">
-                    Focused Profile Review: {selectedPlayer}
-                  </h3>
-                  <p className="text-12 text-text-muted leading-relaxed">
-                    Reviewing structural statistics for {selectedPlayer}. Last feedback was logged 4 days ago. This player currently has 1 unreviewed session contract.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'verdicts' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Assign New Verdicts</span>
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-12 font-mono text-text-muted">Target Player</label>
-                    <select className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze">
-                      {playersList.map(p => <option key={p.name}>{p.name}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-12 font-mono text-text-muted">Fidelity Rating</label>
-                    <input type="text" placeholder="e.g. CRITICAL or COMPLIANT" className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze" />
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-12 font-mono text-text-muted">Review Notes & Directive</label>
-                    <textarea rows={3} placeholder="Provide specific, execution-focused feedback..." className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze" />
-                  </div>
-
-                  <button type="button" className="py-2.5 bg-accent-bronze text-text-primary rounded text-12 font-semibold hover:bg-accent-bronze/95 transition-colors">
-                    Publish Verdict to Player Shell
-                  </button>
-                </div>
+                      </select>
+                    </div>
+                    {selectedPlayerId && coachId && <CoachBriefView playerId={selectedPlayerId} coachId={coachId} />}
+                  </>
+                )}
               </div>
             )}
 
             {activeTab === 'behavioral' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Qualitative Taxonomies</span>
-                <div className="p-4 bg-surface-raised rounded border border-border">
-                  <span className="text-14 font-semibold text-text-primary">Discipline Radar Model</span>
-                  <p className="text-12 text-text-muted leading-relaxed mt-2">
-                    Visualizes the player's execution consistency across 5 critical dimensions: Stop-loss adherence, pre-game ritual complete, sizing precision, volume consistency, and post-session review logs.
-                  </p>
-                </div>
+              <div className="flex flex-col gap-6 animate-fade-in">
+                {rosterLoading && (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
+                {rosterError && (
+                  <div className="bg-surface border border-signal-risk/30 rounded-[6px] p-6 text-14 text-signal-risk">{rosterError}</div>
+                )}
+                {!rosterLoading && !rosterError && (!roster || roster.length === 0) && (
+                  <div className="bg-surface border border-border rounded-[6px] p-8 text-center text-14 text-text-muted">
+                    No players in your roster yet.
+                  </div>
+                )}
+                {!rosterLoading && roster && roster.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <label className="text-12 font-mono text-text-muted uppercase tracking-wider">Player</label>
+                      <select
+                        value={selectedPlayerId ?? ''}
+                        onChange={(e) => setSelectedPlayerId(asPlayerId(e.target.value))}
+                        className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze"
+                      >
+                        {roster.map((p) => (
+                          <option key={p.playerId} value={p.playerId}>{p.displayName}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {selectedPlayerId && <BehavioralProfileView userId={selectedPlayerId} allowWindowControl />}
+                  </>
+                )}
               </div>
             )}
 
             {activeTab === 'framework' && (
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col">
-                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Active Performance Framework</h2>
+                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Performance Framework Configuration</h2>
                   <p className="text-12 text-text-muted mt-1">
-                    Below is the binding framework currently activated for players under your wing.
+                    Create, edit, activate, and archive the quarterly Performance Framework for players under your wing.
                   </p>
                 </div>
-                <ActiveFrameworkView userId={userId} role="COACH" />
+                {coachId ? (
+                  <FrameworkConfigView coachId={coachId} />
+                ) : (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
 
             {activeTab === 'brm' && (
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col">
-                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Bankroll Management Boundaries</h2>
+                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Bankroll Management Configuration</h2>
                   <p className="text-12 text-text-muted mt-1">
-                    Below are the current stop-loss thresholds and level transition caps configured for players.
+                    Configure bankroll bands, BRM levels, and stop-loss thresholds for players under your wing.
                   </p>
                 </div>
-                <ActiveBRMView userId={userId} role="COACH" />
+                {coachId ? (
+                  <BRMConfigView coachId={coachId} />
+                ) : (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
 
             {activeTab === 'taxonomy' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Error Taxonomies</span>
-                <p className="text-12 text-text-muted">
-                  Define violation codes (e.g., T-10: Emotion Sizing Breach, P-02: Delayed Stop Loss) to tag sessions and build structural metrics.
-                </p>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col">
+                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Execution Taxonomy Configuration</h2>
+                  <p className="text-12 text-text-muted mt-1">
+                    Create and edit canonical Execution Actions by dimension, and approve or reject player-proposed actions.
+                  </p>
+                </div>
+                {coachId ? (
+                  <TaxonomyConfigView coachId={coachId} />
+                ) : (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
 
             {activeTab === 'escalation' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Tilt Escalation Protocol Matrix</span>
-                <p className="text-12 text-text-muted">
-                  Automated lock periods triggered by multiple stop-loss violations. Locked players cannot start new session contracts until coach review complete.
-                </p>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col">
+                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Behavioral Escalation Engine</h2>
+                  <p className="text-12 text-text-muted mt-1">
+                    The 8-stage escalation ladder, every active track on your roster, and the mandatory-reason override path.
+                  </p>
+                </div>
+                {coachId ? (
+                  <EscalationConfigView coachId={coachId} onAssignIntervention={handleAssignIntervention} />
+                ) : (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
 
             {activeTab === 'interventions' && (
-              <div className="bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4">
-                <span className="text-12 font-mono text-text-muted uppercase">Active Intervention Assignments</span>
-                <p className="text-12 text-text-muted">
-                  Create and manage active worksheets (such as Emotional Trigger Mapping sheets) that lock a player's play tab until fully written.
-                </p>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col">
+                  <h2 className="text-18 font-medium text-text-primary tracking-tight">Intervention Engine Configuration</h2>
+                  <p className="text-12 text-text-muted mt-1">
+                    Manage the intervention library — each item mapped to a minimum escalation stage — and assign interventions against players' active escalation tracks.
+                  </p>
+                </div>
+                {coachId ? (
+                  <InterventionsConfigView
+                    coachId={coachId}
+                    prefillAssignment={assignPrefill}
+                    onPrefillConsumed={() => setAssignPrefill(null)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center py-12 bg-surface rounded-[6px] border border-border">
+                    <span className="w-6 h-6 border-2 border-accent-bronze border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
 
@@ -558,6 +464,77 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
           </div>
 
         </main>
+      </div>
+    </div>
+  );
+}
+
+// Self-registered players start with no coach (profiles.coach_id IS NULL —
+// see App.tsx's "waiting for your coach" screen, which is what they see
+// until this panel claims them). Shown on every tab, not just once at
+// registration, so it also covers a player who registers after this coach
+// already has a roster. Renders nothing once there's nothing to claim.
+function UnclaimedPlayersPanel({ coachId, onClaimed }: { coachId: CoachId; onClaimed: () => void }) {
+  const { data: unclaimed, loading, reload } = useAsync(() => fetchUnclaimedPlayers(), []);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleClaim = async () => {
+    if (selected.size === 0) return;
+    setClaiming(true);
+    setError(null);
+    try {
+      await claimPlayers(coachId, Array.from(selected).map(asPlayerId));
+      setSelected(new Set());
+      await reload();
+      onClaimed();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add players to roster.');
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  if (loading || !unclaimed || unclaimed.length === 0) return null;
+
+  return (
+    <div className="bg-surface border border-accent-bronze/30 rounded-[6px] overflow-hidden animate-fade-in">
+      <div className="bg-surface-raised/60 border-b border-border px-4 py-2.5 flex items-center gap-2">
+        <UserPlus size={13} className="text-accent-bronze" />
+        <span className="text-12 font-mono text-text-muted uppercase tracking-wider">
+          Unclaimed Players — {unclaimed.length} registered, no coach yet
+        </span>
+      </div>
+      <div className="divide-y divide-border/40">
+        {unclaimed.map((p: UnclaimedPlayer) => (
+          <label key={p.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-surface-raised/30">
+            <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+            <div className="flex flex-col">
+              <span className="text-13 text-text-primary">{p.displayName || p.email.split('@')[0]}</span>
+              <span className="text-11 font-mono text-text-faint">{p.email}</span>
+            </div>
+          </label>
+        ))}
+      </div>
+      <div className="px-4 py-3 flex items-center justify-between gap-3 border-t border-border">
+        {error && <span className="text-11 text-signal-risk">{error}</span>}
+        <button
+          type="button"
+          disabled={selected.size === 0 || claiming}
+          onClick={handleClaim}
+          className="ml-auto px-3 py-1.5 bg-accent-bronze text-ink rounded-[4px] text-12 font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {claiming ? 'Adding…' : selected.size > 0 ? `Add ${selected.size} to Roster` : 'Add to Roster'}
+        </button>
       </div>
     </div>
   );

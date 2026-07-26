@@ -1,0 +1,16 @@
+-- "Players insert own sessions" (00000000000000_initial_schema.sql) let an
+-- authenticated player INSERT into sessions directly as long as the target
+-- contract belonged to them and was VALIDATED. That check is strictly
+-- weaker than perform_start_session (20260720063139_fix_poker_day_session_cap.sql):
+-- it never requires a Preparation Check-in, never enforces the max-two-
+-- sessions-per-poker-day cap, and never transitions the contract to LOCKED —
+-- so any authenticated player could bypass all three via a direct
+-- `supabase.from('sessions').insert(...)` call (e.g. from the browser
+-- console), no app code required.
+--
+-- The only sanctioned path, lockContractAndStartSession (sessionContract.ts),
+-- already goes exclusively through the perform_start_session RPC, which is
+-- SECURITY DEFINER and therefore runs as its owner — RLS INSERT policies on
+-- sessions are irrelevant to it. Dropping this policy removes the direct-
+-- insert bypass entirely with no effect on legitimate session creation.
+DROP POLICY IF EXISTS "Players insert own sessions" ON "public"."sessions";

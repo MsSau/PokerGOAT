@@ -1,0 +1,27 @@
+-- Fixes a latent bug dating back to 20260722030000: adding
+-- p_reflection_note/p_reflection_prose as new trailing params changed
+-- perform_end_session's argument TYPE signature, and Postgres function
+-- identity is (name, argument types) — CREATE OR REPLACE with a different
+-- signature creates a SECOND overloaded function rather than replacing the
+-- original. The old 5-arg overload has been sitting in the database ever
+-- since, silently un-updated by every migration since (including today's
+-- 20260724000000, which widens verdict classification — that widening
+-- only ever reached the 7-arg overload).
+--
+-- Why this is a real, not theoretical, problem: endSession.ts's RPC call
+-- sets p_reflection_note/p_reflection_prose to `undefined` whenever there's
+-- nothing to send (blank reflection text, no free text at all — a common
+-- case, not an edge case). JSON.stringify drops undefined-valued keys
+-- entirely, so the outgoing request body in that case contains only the
+-- original 5 keys — a body that matches BOTH overloads' required
+-- parameters (both have defaults for everything past p_session_id..
+-- p_verdict_evidence). PostgREST's overload resolution in that situation is
+-- not something to rely on: at best it silently picks the stale 5-arg
+-- function (meaning reflection_note/reflection_prose never get written and
+-- none of today's classification widening ever runs, for exactly the
+-- sessions where the player left free text blank); at worst it's genuinely
+-- ambiguous and errors.
+--
+-- Fix: drop the stale overload outright. Only the 7-arg signature should
+-- ever exist.
+DROP FUNCTION IF EXISTS "public"."perform_end_session"("uuid", "jsonb", "jsonb", "jsonb", "uuid");
