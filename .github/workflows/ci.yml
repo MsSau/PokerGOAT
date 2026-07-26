@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # tsc --noEmit — this repo's lint step (no separate ESLint config),
+      # also typechecks server.ts. See CLAUDE.md.
+      - run: npm run lint
+
+      # Unit tests for the pure/deterministic src/lib/ engines only.
+      - run: npm run test
+
+      # Frontend build (vite build -> dist/).
+      - run: npm run build
+
+      # Deployable server bundle (esbuild server.ts -> server.js) — the
+      # artifact the `clean` script expects and the single-process/Node
+      # deployment target consumes. Doesn't run on Vercel (api/index.ts
+      # is built by Vercel's own pipeline instead) but should still always
+      # compile cleanly.
+      - run: npm run build:server
