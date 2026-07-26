@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { PlayerRoute, UserRole, ActiveSession } from '../types';
+import { PlayerId, SessionId, asSessionId, asSessionContractId } from '../types/ids';
 import ActiveFrameworkView from './ActiveFrameworkView';
 import ActiveBRMView from './ActiveBRMView';
 import { PlayerDashboard } from './PlayerDashboard';
@@ -37,7 +38,7 @@ import { useAsync } from '../lib/useAsync';
 
 
 interface PlayerShellProps {
-  userId: string;
+  userId: PlayerId;
   userEmail: string;
   onLogout: () => void;
   onSwitchRole: (role: UserRole) => void;
@@ -89,59 +90,90 @@ useEffect(() => {
     .catch(console.error);
 }, [userId]);
 
-useEffect(() => {
-  let cancelled = false;
-  async function hydrateSession() {
-    setSessionLoading(true);
-    try {
-      // ACTIVE session takes priority
-      const active = await fetchActiveSession(userId);
-      if (active && !cancelled) {
-        setSession((prev) => ({
-          ...prev,
-          id: active.id,
-          contractId: active.contract_id,
-          isActive: true,
-          status: 'ACTIVE',
-          startTime: active.start_time,
-        }));
-        return;
-      }
-
-      // Otherwise check for a session stuck in REVIEW_PENDING
-      const { data: pending, error } = await supabase
-        .from('sessions')
-        .select('id, contract_id, start_time, status')
-        .eq('player_id', userId)
-        .eq('status', 'REVIEW_PENDING')
-        .order('start_time', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      if (pending && !cancelled) {
-        setSession((prev) => ({
-          ...prev,
-          id: pending.id,
-          contractId: pending.contract_id,
-          isActive: false,
-          status: 'REVIEW_PENDING',
-          startTime: pending.start_time,
-        }));
-      }
-    } catch (err) {
-      //console.error('Failed to hydrate session state:', err);
-      console.error("HYDRATE ERROR");
-console.error(err);
-console.error(JSON.stringify(err, null, 2));
-    } finally {
-      if (!cancelled) setSessionLoading(false);
+// Re-checks which session (if any) is actually current for this player.
+// Shared by the mount-time hydration below AND the Play-tab re-check
+// effect further down — PlayerShell's `session` state is otherwise only
+// ever updated by this player's OWN actions (handleSessionStarted,
+// handleEndSessionClicked, ...), so it can silently go stale if a session
+// starts/ends by any other means while this tab sits open (another tab,
+// another device, or — during development — a script/agent acting on the
+// same account). That desync surfaces as SessionContractView's static
+// LOCKED view (no Finalize/+Buy-in) instead of TournamentLog, since
+// PlayerShell picks which one to render off this local status.
+const hydrateSession = useCallback(async (cancelledRef?: { current: boolean }) => {
+  setSessionLoading(true);
+  try {
+    // ACTIVE session takes priority
+    const active = await fetchActiveSession(userId);
+    if (cancelledRef?.current) return;
+    if (active) {
+      setSession((prev) => ({
+        ...prev,
+        id: asSessionId(active.id),
+        contractId: asSessionContractId(active.contract_id),
+        isActive: true,
+        status: 'ACTIVE',
+        startTime: active.start_time,
+      }));
+      return;
     }
+
+    // Otherwise check for a session stuck in REVIEW_PENDING
+    const { data: pending, error } = await supabase
+      .from('sessions')
+      .select('id, contract_id, start_time, status')
+      .eq('player_id', userId)
+      .eq('status', 'REVIEW_PENDING')
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    if (cancelledRef?.current) return;
+    if (pending) {
+      setSession((prev) => ({
+        ...prev,
+        id: asSessionId(pending.id),
+        contractId: asSessionContractId(pending.contract_id),
+        isActive: false,
+        status: 'REVIEW_PENDING',
+        startTime: pending.start_time,
+      }));
+    } else {
+      // Neither ACTIVE nor REVIEW_PENDING exists right now — if local state
+      // still thinks it does (this tab missed the session ending elsewhere),
+      // fall back to NONE so the Play tab renders SessionContractView's
+      // creation flow instead of a stale TournamentLog/SessionReview for a
+      // session that's already gone.
+      setSession((prev) =>
+        prev.status === 'ACTIVE' || prev.status === 'REVIEW_PENDING'
+          ? { ...prev, id: null, contractId: null, isActive: false, status: 'NONE', startTime: null }
+          : prev
+      );
+    }
+  } catch (err) {
+    console.error('Failed to hydrate session state:', err);
+  } finally {
+    if (!cancelledRef?.current) setSessionLoading(false);
   }
-  hydrateSession();
-  return () => { cancelled = true; };
 }, [userId]);
 
-const handleSessionStarted = (sessionId: string) => {
+useEffect(() => {
+  const cancelledRef = { current: false };
+  hydrateSession(cancelledRef);
+  return () => { cancelledRef.current = true; };
+}, [hydrateSession]);
+
+// Re-check specifically when navigating to the Play tab — that's the one
+// screen where a stale session.status actually renders the wrong
+// component (see hydrateSession's comment above). Not polled/re-checked
+// on every tab to avoid an extra round-trip on tabs that don't care.
+useEffect(() => {
+  if (activeTab === 'play') {
+    hydrateSession();
+  }
+}, [activeTab, hydrateSession]);
+
+const handleSessionStarted = (sessionId: SessionId) => {
   setSession((prev) => ({ ...prev, id: sessionId, isActive: true, status: 'ACTIVE', startTime: new Date().toISOString() }));
 };
 

@@ -15,9 +15,10 @@ import { fetchAssignmentsForPlayer, markAssignmentCompletedByPlayer, PlayerAssig
 import { ESCALATION_LADDER, stageLabel } from '../lib/escalationConfig';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
+import { PlayerId, asInterventionAssignmentId } from '../types/ids';
 
 interface Props {
-  userId: string;
+  userId: PlayerId;
   onAssignmentsChanged?: () => void;
 }
 
@@ -131,7 +132,7 @@ export default function PlayerInterventionsView({ userId, onAssignmentsChanged }
   const history = (assignments || []).filter((a) => a.status !== 'ASSIGNED');
 
   async function handleComplete(id: string, notes: string | null) {
-    await markAssignmentCompletedByPlayer(id, notes);
+    await markAssignmentCompletedByPlayer(asInterventionAssignmentId(id), notes);
     await reload();
     onAssignmentsChanged?.();
   }

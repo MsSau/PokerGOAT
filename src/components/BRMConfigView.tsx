@@ -29,9 +29,10 @@ import { useAsync } from '../lib/useAsync';
 import { formatCurrency } from '../lib/utils';
 import { getErrorMessage } from '../lib/utils';
 import ReasonModal from './ReasonModal';
+import { CoachId, PlayerId, asPlayerId, asBRMConfigId, asBRMConfigVersionId } from '../types/ids';
 
 interface Props {
-  coachId: string;
+  coachId: CoachId;
 }
 
 // Numeric spreadsheet columns only — slot_rules gets its own expandable
@@ -79,9 +80,9 @@ function validateRows(rows: BRMLevelRow[]): string[] {
 // own roster off just `coachId`, same as the rest of this screen) rather
 // than depending on CoachShell's selectedPlayerId, since this section can
 // be viewed independently of whichever player the Brief tab has selected.
-function PlayerFinancialReview({ coachId }: { coachId: string }) {
+function PlayerFinancialReview({ coachId }: { coachId: CoachId }) {
   const { data: roster } = useAsync(() => fetchCoachRoster(coachId), [coachId]);
-  const [playerId, setPlayerId] = useState<string | null>(null);
+  const [playerId, setPlayerId] = useState<PlayerId | null>(null);
 
   useEffect(() => {
     if (!playerId && roster && roster.length > 0) setPlayerId(roster[0].playerId);
@@ -158,7 +159,7 @@ function PlayerFinancialReview({ coachId }: { coachId: string }) {
         {roster && roster.length > 0 && (
           <select
             value={playerId ?? ''}
-            onChange={(e) => setPlayerId(e.target.value)}
+            onChange={(e) => setPlayerId(asPlayerId(e.target.value))}
             className="bg-ink border border-border rounded p-2 text-13 text-text-primary focus:outline-none focus:border-accent-bronze"
           >
             {roster.map((p) => (
@@ -314,7 +315,7 @@ export default function BRMConfigView({ coachId }: Props) {
     if (!config) return;
     let alive = true;
     setVersionsLoading(true);
-    fetchBRMVersions(config.id)
+    fetchBRMVersions(asBRMConfigId(config.id))
       .then((v) => alive && setVersions(v))
       .catch((err) => alive && setActionError(getErrorMessage(err)))
       .finally(() => alive && setVersionsLoading(false));
@@ -327,7 +328,7 @@ export default function BRMConfigView({ coachId }: Props) {
     if (!active) return;
     let alive = true;
     setRowsLoading(true);
-    fetchRowsForVersion(active.id)
+    fetchRowsForVersion(asBRMConfigVersionId(active.id))
       .then((r) => alive && setRows(r))
       .catch((err) => alive && setActionError(getErrorMessage(err)))
       .finally(() => alive && setRowsLoading(false));
@@ -395,8 +396,8 @@ export default function BRMConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await reviseBRMConfig(config.id, active, rows, reason);
-      const refreshed = await fetchBRMVersions(config.id);
+      await reviseBRMConfig(asBRMConfigId(config.id), active, rows, reason);
+      const refreshed = await fetchBRMVersions(asBRMConfigId(config.id));
       setVersions(refreshed);
       setReasonModalOpen(false);
     } catch (err) {
@@ -413,7 +414,7 @@ export default function BRMConfigView({ coachId }: Props) {
     }
     setExpandedVersionId(version.id);
     if (!expandedRows[version.id]) {
-      const r = await fetchRowsForVersion(version.id);
+      const r = await fetchRowsForVersion(asBRMConfigVersionId(version.id));
       setExpandedRows((prev) => ({ ...prev, [version.id]: r }));
     }
   }

@@ -448,25 +448,38 @@ export type Database = {
         Row: {
           created_at: string | null
           directive_text: string
+          execution_action_id: string | null
           id: string
           player_id: string
+          retracted_at: string | null
           review_id: string | null
         }
         Insert: {
           created_at?: string | null
           directive_text: string
+          execution_action_id?: string | null
           id?: string
           player_id: string
+          retracted_at?: string | null
           review_id?: string | null
         }
         Update: {
           created_at?: string | null
           directive_text?: string
+          execution_action_id?: string | null
           id?: string
           player_id?: string
+          retracted_at?: string | null
           review_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "coach_directives_execution_action_id_fkey"
+            columns: ["execution_action_id"]
+            isOneToOne: false
+            referencedRelation: "execution_actions"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "coach_directives_player_id_fkey"
             columns: ["player_id"]
@@ -1849,6 +1862,7 @@ export type Database = {
         Row: {
           coach_id: string | null
           created_at: string | null
+          display_name: string | null
           email: string
           id: string
           role: Database["public"]["Enums"]["role_type"]
@@ -1857,6 +1871,7 @@ export type Database = {
         Insert: {
           coach_id?: string | null
           created_at?: string | null
+          display_name?: string | null
           email: string
           id: string
           role?: Database["public"]["Enums"]["role_type"]
@@ -1865,6 +1880,7 @@ export type Database = {
         Update: {
           coach_id?: string | null
           created_at?: string | null
+          display_name?: string | null
           email?: string
           id?: string
           role?: Database["public"]["Enums"]["role_type"]
@@ -1890,6 +1906,7 @@ export type Database = {
       session_contract_conditional_tournaments: {
         Row: {
           activation_condition: string
+          buy_in_amount: number | null
           id: string
           permitted_buy_ins: number
           session_contract_id: string
@@ -1898,6 +1915,7 @@ export type Database = {
         }
         Insert: {
           activation_condition: string
+          buy_in_amount?: number | null
           id?: string
           permitted_buy_ins: number
           session_contract_id: string
@@ -1906,6 +1924,7 @@ export type Database = {
         }
         Update: {
           activation_condition?: string
+          buy_in_amount?: number | null
           id?: string
           permitted_buy_ins?: number
           session_contract_id?: string
@@ -1936,6 +1955,7 @@ export type Database = {
           original_slot_id: string | null
           passed_brm_validation: boolean
           reason: string
+          replacement_buy_in_amount: number | null
           replacement_permitted_buy_ins: number
           replacement_tournament_name: string
           session_contract_id: string
@@ -1946,6 +1966,7 @@ export type Database = {
           original_slot_id?: string | null
           passed_brm_validation: boolean
           reason: string
+          replacement_buy_in_amount?: number | null
           replacement_permitted_buy_ins: number
           replacement_tournament_name: string
           session_contract_id: string
@@ -1956,6 +1977,7 @@ export type Database = {
           original_slot_id?: string | null
           passed_brm_validation?: boolean
           reason?: string
+          replacement_buy_in_amount?: number | null
           replacement_permitted_buy_ins?: number
           replacement_tournament_name?: string
           session_contract_id?: string
@@ -1979,6 +2001,7 @@ export type Database = {
       }
       session_contract_tournaments: {
         Row: {
+          buy_in_amount: number | null
           created_at: string | null
           id: string
           permitted_buy_ins: number
@@ -1988,6 +2011,7 @@ export type Database = {
           tournament_name: string
         }
         Insert: {
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           permitted_buy_ins: number
@@ -1997,6 +2021,7 @@ export type Database = {
           tournament_name: string
         }
         Update: {
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           permitted_buy_ins?: number
@@ -2865,6 +2890,7 @@ export type Database = {
       weekly_game_plan_conditional_tournaments: {
         Row: {
           activation_condition: string
+          buy_in_amount: number | null
           created_at: string | null
           id: string
           permitted_buy_ins: number
@@ -2873,6 +2899,7 @@ export type Database = {
         }
         Insert: {
           activation_condition: string
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           permitted_buy_ins: number
@@ -2881,6 +2908,7 @@ export type Database = {
         }
         Update: {
           activation_condition?: string
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           permitted_buy_ins?: number
@@ -2928,6 +2956,7 @@ export type Database = {
       }
       weekly_game_plan_tournaments: {
         Row: {
+          buy_in_amount: number | null
           created_at: string | null
           id: string
           intended_buy_ins: number
@@ -2938,6 +2967,7 @@ export type Database = {
           weekly_game_plan_id: string
         }
         Insert: {
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           intended_buy_ins: number
@@ -2948,6 +2978,7 @@ export type Database = {
           weekly_game_plan_id: string
         }
         Update: {
+          buy_in_amount?: number | null
           created_at?: string | null
           id?: string
           intended_buy_ins?: number
@@ -3074,6 +3105,7 @@ export type Database = {
           isSetofReturn: true
         }
       }
+      fn_is_coach: { Args: never; Returns: boolean }
       fn_is_coach_of: { Args: { target_player_id: string }; Returns: boolean }
       perform_end_session: {
         Args: {

@@ -6,6 +6,7 @@
 // an LLM yet).
 
 import { supabase, fetchPlayerDashboardData } from './supabase';
+import { PlayerId, CoachId, EscalationTrackId, asEscalationTrackId } from '../types/ids';
 
 const ALERT_LOOKBACK_DAYS = 14;
 
@@ -20,7 +21,7 @@ export interface CriticalAlertRow {
 export type RepeatOffenceTrend = 'WORSENING' | 'IMPROVING' | 'STABLE';
 
 export interface RepeatOffenceRow {
-  trackId: string;
+  trackId: EscalationTrackId;
   actionName: string;
   stage: number;
   trend: RepeatOffenceTrend;
@@ -47,7 +48,7 @@ function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-async function computeSinceLastReview(playerId: string): Promise<string> {
+async function computeSinceLastReview(playerId: PlayerId): Promise<string> {
   const { data: lastReview, error: rErr } = await supabase
     .from('coach_reviews')
     .select('created_at')
@@ -85,7 +86,7 @@ async function computeSinceLastReview(playerId: string): Promise<string> {
   return `${sessionIds.length} session${sessionIds.length === 1 ? '' : 's'} ${windowPhrase}. ${goldOutcomes} GOLD outcome${goldOutcomes === 1 ? '' : 's'}.`;
 }
 
-async function fetchCriticalAlerts(playerId: string): Promise<CriticalAlertRow[]> {
+async function fetchCriticalAlerts(playerId: PlayerId): Promise<CriticalAlertRow[]> {
   const { data: sessions, error: sErr } = await supabase
     .from('sessions')
     .select('id')
@@ -118,7 +119,7 @@ async function fetchCriticalAlerts(playerId: string): Promise<CriticalAlertRow[]
   });
 }
 
-async function fetchRepeatOffences(playerId: string): Promise<RepeatOffenceRow[]> {
+async function fetchRepeatOffences(playerId: PlayerId): Promise<RepeatOffenceRow[]> {
   const { data: tracks, error } = await supabase
     .from('escalation_tracks')
     .select('id, current_stage_index, last_occurrence_at, execution_actions(name)')
@@ -152,7 +153,7 @@ async function fetchRepeatOffences(playerId: string): Promise<RepeatOffenceRow[]
           ? 'IMPROVING'
           : 'STABLE';
     return {
-      trackId: t.id,
+      trackId: asEscalationTrackId(t.id),
       actionName: action?.name ?? 'Unknown action',
       stage: t.current_stage_index,
       trend,
@@ -161,7 +162,7 @@ async function fetchRepeatOffences(playerId: string): Promise<RepeatOffenceRow[]
   });
 }
 
-async function fetchLearningImplementation(playerId: string): Promise<LearningPriorityRow[]> {
+async function fetchLearningImplementation(playerId: PlayerId): Promise<LearningPriorityRow[]> {
   const { data: lastReview, error: rErr } = await supabase
     .from('coach_reviews')
     .select('id')
@@ -181,7 +182,7 @@ async function fetchLearningImplementation(playerId: string): Promise<LearningPr
   return data || [];
 }
 
-async function fetchConversationMessageCount(playerId: string, coachId: string): Promise<number> {
+async function fetchConversationMessageCount(playerId: PlayerId, coachId: CoachId): Promise<number> {
   const { data: threads, error: tErr } = await supabase
     .from('deep_analysis_threads')
     .select('id')
@@ -219,7 +220,7 @@ function buildSuggestedAgenda(alerts: CriticalAlertRow[], offences: RepeatOffenc
   return items.slice(0, 3);
 }
 
-export async function fetchWeeklyCoachBrief(playerId: string, coachId: string): Promise<WeeklyCoachBrief> {
+export async function fetchWeeklyCoachBrief(playerId: PlayerId, coachId: CoachId): Promise<WeeklyCoachBrief> {
   const [sinceLastReview, criticalAlerts, dashboard, repeatOffences, learningImplementation, aiConversationMessageCount] =
     await Promise.all([
       computeSinceLastReview(playerId),

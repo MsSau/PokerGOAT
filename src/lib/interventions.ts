@@ -49,6 +49,10 @@
 
 import { supabase } from './supabase';
 import { InterventionLibraryItem, InterventionAssignment } from '../types';
+import {
+  CoachId, PlayerId, ExecutionActionId,
+  InterventionLibraryItemId, InterventionAssignmentId,
+} from '../types/ids';
 
 // --- Library -----------------------------------------------------------
 
@@ -59,7 +63,7 @@ export interface LibraryItemFields {
   min_escalation_stage: number;
 }
 
-export async function fetchLibrary(coachId: string): Promise<InterventionLibraryItem[]> {
+export async function fetchLibrary(coachId: CoachId): Promise<InterventionLibraryItem[]> {
   const { data, error } = await supabase
     .from('intervention_library')
     .select('*')
@@ -70,19 +74,19 @@ export async function fetchLibrary(coachId: string): Promise<InterventionLibrary
   return data || [];
 }
 
-export async function createLibraryItem(coachId: string, fields: LibraryItemFields): Promise<InterventionLibraryItem> {
+export async function createLibraryItem(coachId: CoachId, fields: LibraryItemFields): Promise<InterventionLibraryItem> {
   const { data, error } = await supabase.from('intervention_library').insert({ ...fields, coach_id: coachId }).select('*').single();
   if (error) throw error;
   return data;
 }
 
-export async function updateLibraryItem(id: string, fields: LibraryItemFields): Promise<InterventionLibraryItem> {
+export async function updateLibraryItem(id: InterventionLibraryItemId, fields: LibraryItemFields): Promise<InterventionLibraryItem> {
   const { data, error } = await supabase.from('intervention_library').update(fields).eq('id', id).select('*').single();
   if (error) throw error;
   return data;
 }
 
-export async function setLibraryItemActive(id: string, isActive: boolean): Promise<InterventionLibraryItem> {
+export async function setLibraryItemActive(id: InterventionLibraryItemId, isActive: boolean): Promise<InterventionLibraryItem> {
   const { data, error } = await supabase.from('intervention_library').update({ is_active: isActive }).eq('id', id).select('*').single();
   if (error) throw error;
   return data;
@@ -96,7 +100,7 @@ export interface AssignmentWithContext extends InterventionAssignment {
   library_item_name: string;
 }
 
-export async function fetchAssignmentsForCoach(coachId: string): Promise<AssignmentWithContext[]> {
+export async function fetchAssignmentsForCoach(coachId: CoachId): Promise<AssignmentWithContext[]> {
   const { data: players, error: playersError } = await supabase
     .from('profiles')
     .select('id, email')
@@ -136,9 +140,9 @@ export async function fetchAssignmentsForCoach(coachId: string): Promise<Assignm
 
 /** Manual coach assignment — captures the player's live escalation stage at this moment. Load Management is disabled, so autonomy_mode_at_assignment is always the PRD's own stated MVP default rather than a looked-up policy. */
 export async function createManualAssignment(
-  coachId: string,
-  playerId: string,
-  executionActionId: string,
+  coachId: CoachId,
+  playerId: PlayerId,
+  executionActionId: ExecutionActionId,
   libraryItem: InterventionLibraryItem,
 ): Promise<InterventionAssignment> {
   const { data: track, error: trackError } = await supabase
@@ -166,7 +170,7 @@ export async function createManualAssignment(
   return data;
 }
 
-export async function setAssignmentStatus(id: string, status: 'COMPLETED' | 'CANCELLED'): Promise<InterventionAssignment> {
+export async function setAssignmentStatus(id: InterventionAssignmentId, status: 'COMPLETED' | 'CANCELLED'): Promise<InterventionAssignment> {
   const { data, error } = await supabase
     .from('intervention_assignments')
     .update({ status, completed_at: status === 'COMPLETED' ? new Date().toISOString() : null })
@@ -187,7 +191,7 @@ export interface PlayerAssignment extends InterventionAssignment {
 }
 
 /** Count of this player's currently-ASSIGNED interventions — cheap enough for a nav-rail badge, unlike fetchAssignmentsForPlayer's full joined history. */
-export async function countActiveAssignmentsForPlayer(playerId: string): Promise<number> {
+export async function countActiveAssignmentsForPlayer(playerId: PlayerId): Promise<number> {
   const { count, error } = await supabase
     .from('intervention_assignments')
     .select('id', { count: 'exact', head: true })
@@ -198,7 +202,7 @@ export async function countActiveAssignmentsForPlayer(playerId: string): Promise
 }
 
 /** Every intervention ever assigned to this player, newest first — includes the library item's own description/requirements so the player knows what's being asked of them. */
-export async function fetchAssignmentsForPlayer(playerId: string): Promise<PlayerAssignment[]> {
+export async function fetchAssignmentsForPlayer(playerId: PlayerId): Promise<PlayerAssignment[]> {
   const { data: assignments, error } = await supabase
     .from('intervention_assignments')
     .select('*')
@@ -236,7 +240,7 @@ export async function fetchAssignmentsForPlayer(playerId: string): Promise<Playe
  * assignments") only allows this exact ASSIGNED -> COMPLETED transition on
  * a row the player owns — a player can never assign, cancel, or reopen one.
  */
-export async function markAssignmentCompletedByPlayer(assignmentId: string, playerNotes: string | null): Promise<InterventionAssignment> {
+export async function markAssignmentCompletedByPlayer(assignmentId: InterventionAssignmentId, playerNotes: string | null): Promise<InterventionAssignment> {
   const { data, error } = await supabase
     .from('intervention_assignments')
     .update({ status: 'COMPLETED', completed_at: new Date().toISOString(), player_notes: playerNotes })

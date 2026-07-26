@@ -5,11 +5,12 @@
 
 import { supabase } from './supabase';
 import { Database } from '../types/database';
+import { CoachId, PlayerId, asPlayerId } from '../types/ids';
 
 export type RosterStatus = 'ESCALATED' | 'FLAGGED' | 'COMPLIANT';
 
 export interface CoachRosterEntry {
-  playerId: string;
+  playerId: PlayerId;
   email: string;
   displayName: string;
   currentBankroll: number | null;
@@ -21,10 +22,10 @@ export interface CoachRosterEntry {
 
 const FLAGGED_LOOKBACK_DAYS = 14;
 
-export async function fetchCoachRoster(coachId: string): Promise<CoachRosterEntry[]> {
+export async function fetchCoachRoster(coachId: CoachId): Promise<CoachRosterEntry[]> {
   const { data: players, error: pErr } = await supabase
     .from('profiles')
-    .select('id, email')
+    .select('id, email, display_name')
     .eq('coach_id', coachId)
     .eq('role', 'PLAYER');
   if (pErr) throw pErr;
@@ -92,9 +93,9 @@ export async function fetchCoachRoster(coachId: string): Promise<CoachRosterEntr
     const lastSession = lastSessionByPlayer.get(p.id);
     const status: RosterStatus = escalatedPlayers.has(p.id) ? 'ESCALATED' : flaggedPlayers.has(p.id) ? 'FLAGGED' : 'COMPLIANT';
     return {
-      playerId: p.id,
+      playerId: asPlayerId(p.id),
       email: p.email,
-      displayName: p.email.split('@')[0],
+      displayName: p.display_name || p.email.split('@')[0],
       currentBankroll: bankrollByPlayer.get(p.id) ?? null,
       brmLevelIndex: brmLevelByPlayer.get(p.id) ?? null,
       lastSessionAt: lastSession?.start_time ?? null,

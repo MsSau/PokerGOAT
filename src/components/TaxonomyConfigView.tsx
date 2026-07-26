@@ -27,9 +27,10 @@ import { Dimension } from '../lib/executionEngine';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
 import ReasonModal from './ReasonModal';
+import { CoachId, asExecutionActionId, asTaxonomyVersionId } from '../types/ids';
 
 interface Props {
-  coachId: string;
+  coachId: CoachId;
 }
 
 const DIMENSION_TABS: { key: Dimension; label: string }[] = [
@@ -77,7 +78,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setListLoading(true);
     try {
       const [canonical, proposedActions] = await Promise.all([
-        fetchCanonicalActions(taxonomyCtx.version.id),
+        fetchCanonicalActions(asTaxonomyVersionId(taxonomyCtx.version.id)),
         fetchProposedActions(coachId),
       ]);
       setActions(canonical);
@@ -138,7 +139,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      const created = await createCanonicalAction(coachId, taxonomyCtx.version.id, fields);
+      const created = await createCanonicalAction(coachId, asTaxonomyVersionId(taxonomyCtx.version.id), fields);
       await reloadLists();
       setCreatingNew(false);
       setSelectedId(created.id);
@@ -154,7 +155,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await updateCanonicalAction(selected.id, fields, reason);
+      await updateCanonicalAction(asExecutionActionId(selected.id), fields, reason);
       await reloadLists();
       setReasonModalOpen(null);
     } catch (err) {
@@ -170,7 +171,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await setActionActiveStatus(selected.id, makeActive, reason);
+      await setActionActiveStatus(asExecutionActionId(selected.id), makeActive, reason);
       await reloadLists();
       setReasonModalOpen(null);
     } catch (err) {
@@ -185,7 +186,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await approveProposedAction(selected.id, coachId, taxonomyCtx.version.id, fields);
+      await approveProposedAction(asExecutionActionId(selected.id), coachId, asTaxonomyVersionId(taxonomyCtx.version.id), fields);
       await reloadLists();
       setSelectedId(null);
     } catch (err) {
@@ -200,7 +201,7 @@ export default function TaxonomyConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await rejectProposedAction(selected.id);
+      await rejectProposedAction(asExecutionActionId(selected.id));
       await reloadLists();
       setSelectedId(null);
     } catch (err) {

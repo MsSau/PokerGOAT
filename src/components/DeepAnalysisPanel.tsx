@@ -22,10 +22,11 @@ import {
 import { VerdictDetail } from '../lib/verdicts';
 import { getErrorMessage } from '../lib/utils';
 import { MinimalSpeechRecognition, getSpeechRecognitionCtor } from '../lib/speechRecognition';
+import { PlayerId, CoachId, DeepAnalysisThreadId } from '../types/ids';
 
 interface Props {
-  playerId: string;
-  coachId: string;
+  playerId: PlayerId;
+  coachId: CoachId;
   verdict: VerdictDetail;
   onClose: () => void;
 }
@@ -53,7 +54,7 @@ function MessageBubble({ message }: { message: DeepAnalysisMessage }) {
 }
 
 export default function DeepAnalysisPanel({ playerId, coachId, verdict, onClose }: Props) {
-  const [threadId, setThreadId] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<DeepAnalysisThreadId | null>(null);
   const [messages, setMessages] = useState<DeepAnalysisMessage[]>([]);
   const [context, setContext] = useState<DeepAnalysisContext | null>(null);
   const [loading, setLoading] = useState(true);

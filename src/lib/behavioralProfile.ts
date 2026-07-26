@@ -22,6 +22,7 @@ import {
   scoreForRating,
   scoreForMedal,
 } from './behavioralProfileEngine';
+import { PlayerId } from '../types/ids';
 
 export type {
   DimensionProfile,
@@ -38,7 +39,7 @@ export { BEHAVIORAL_PROFILE_DIMENSIONS, BEHAVIORAL_CATEGORY_LABELS, computeBehav
 // data in practice.
 const HISTORY_LIMIT = 120;
 
-export async function fetchBehavioralProfile(playerId: string, forcedWindow?: EvidenceWindow): Promise<DimensionProfile[]> {
+export async function fetchBehavioralProfile(playerId: PlayerId, forcedWindow?: EvidenceWindow): Promise<DimensionProfile[]> {
   const evidenceByDimension: Partial<Record<Dimension, EvidencePoint[]>> = {};
 
   const { data: sessions, error: sErr } = await supabase

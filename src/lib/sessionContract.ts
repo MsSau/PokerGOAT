@@ -1,5 +1,11 @@
 import { supabase } from './supabase';
 import { Database } from '../types/database';
+import {
+  PlayerId, CoachId, PokerWeekId, BoundaryConfigId, WeeklyGamePlanId,
+  WGPTournamentSlotId, WGPConditionalTournamentId, BRMAssignmentId, BRMLevelId,
+  FrameworkVersionId, SessionContractId, PreparationId, SessionId,
+  asFrameworkVersionId, asSessionId,
+} from '../types/ids';
 
 export type SessionContractSubstitutionRow = Database['public']['Tables']['session_contract_substitutions']['Row'];
 export type SessionContractTournamentRow = Database['public']['Tables']['session_contract_tournaments']['Row'];
@@ -15,25 +21,31 @@ export type SessionContractTournamentRow = Database['public']['Tables']['session
 // (wider) shape, so don't conflate the two.
 // ============================================================================
 
-export type PokerWeekSummary = Pick<
-  Database['public']['Tables']['poker_weeks']['Row'],
-  'id' | 'player_id' | 'start_timestamp' | 'end_timestamp' | 'boundary_config_id'
->;
+export type PokerWeekSummary = Omit<
+  Pick<Database['public']['Tables']['poker_weeks']['Row'], 'id' | 'player_id' | 'start_timestamp' | 'end_timestamp' | 'boundary_config_id'>,
+  'id' | 'player_id' | 'boundary_config_id'
+> & { id: PokerWeekId; player_id: PlayerId; boundary_config_id: BoundaryConfigId | null };
 
-export type WeeklyGamePlanSummary = Pick<
-  Database['public']['Tables']['weekly_game_plans']['Row'],
-  'id' | 'player_id' | 'poker_week_id' | 'framework_version_id' | 'brm_assignment_id' | 'status' | 'locked_at' | 'weekly_intention' | 'weekly_focus'
->;
+export type WeeklyGamePlanSummary = Omit<
+  Pick<Database['public']['Tables']['weekly_game_plans']['Row'],
+    'id' | 'player_id' | 'poker_week_id' | 'framework_version_id' | 'brm_assignment_id' | 'status' | 'locked_at' | 'weekly_intention' | 'weekly_focus'>,
+  'id' | 'player_id' | 'poker_week_id' | 'framework_version_id' | 'brm_assignment_id'
+> & {
+  id: WeeklyGamePlanId; player_id: PlayerId; poker_week_id: PokerWeekId;
+  framework_version_id: FrameworkVersionId | null; brm_assignment_id: BRMAssignmentId | null;
+};
 
-export type WGPTournamentSlot = Pick<
-  Database['public']['Tables']['weekly_game_plan_tournaments']['Row'],
-  'id' | 'weekly_game_plan_id' | 'slot_number' | 'tournament_name' | 'permitted_buy_ins' | 'intended_buy_ins' | 'planned_date'
->;
+export type WGPTournamentSlot = Omit<
+  Pick<Database['public']['Tables']['weekly_game_plan_tournaments']['Row'],
+    'id' | 'weekly_game_plan_id' | 'slot_number' | 'tournament_name' | 'permitted_buy_ins' | 'intended_buy_ins' | 'planned_date' | 'buy_in_amount'>,
+  'id' | 'weekly_game_plan_id'
+> & { id: WGPTournamentSlotId; weekly_game_plan_id: WeeklyGamePlanId };
 
-export type WGPConditionalTournament = Pick<
-  Database['public']['Tables']['weekly_game_plan_conditional_tournaments']['Row'],
-  'id' | 'weekly_game_plan_id' | 'tournament_name' | 'permitted_buy_ins' | 'activation_condition'
->;
+export type WGPConditionalTournament = Omit<
+  Pick<Database['public']['Tables']['weekly_game_plan_conditional_tournaments']['Row'],
+    'id' | 'weekly_game_plan_id' | 'tournament_name' | 'permitted_buy_ins' | 'activation_condition' | 'buy_in_amount'>,
+  'id' | 'weekly_game_plan_id'
+> & { id: WGPConditionalTournamentId; weekly_game_plan_id: WeeklyGamePlanId };
 
 export type WeeklyBRMAssignmentRow = Database['public']['Tables']['weekly_brm_assignments']['Row'];
 
@@ -46,10 +58,12 @@ export type WeeklyBRMAssignmentRow = Database['public']['Tables']['weekly_brm_as
 // retain the BRM configuration version" requirements, but nothing in this
 // codebase writes or reads them yet outside perform_end_session() — see
 // resolveWGPContext below for the one call site that does select('*').
-export type WeeklyBRMAssignmentSummary = Pick<WeeklyBRMAssignmentRow,
-  'id' | 'player_id' | 'poker_week_id' | 'brm_level_id' |
-  'session_stop_loss_snapshot' | 'day_stop_loss_snapshot' | 'week_stop_loss_snapshot' | 'locked_at'
->;
+export type WeeklyBRMAssignmentSummary = Omit<
+  Pick<WeeklyBRMAssignmentRow,
+    'id' | 'player_id' | 'poker_week_id' | 'brm_level_id' |
+    'session_stop_loss_snapshot' | 'day_stop_loss_snapshot' | 'week_stop_loss_snapshot' | 'locked_at'>,
+  'id' | 'player_id' | 'poker_week_id' | 'brm_level_id'
+> & { id: BRMAssignmentId; player_id: PlayerId; poker_week_id: PokerWeekId; brm_level_id: BRMLevelId };
 
 // fetchPlayerDashboardData additionally joins brm_levels!inner(level_index).
 // weekly_brm_assignments -> brm_levels is isOneToOne: false, so the raw
@@ -77,7 +91,7 @@ export interface CapacityState {
 // POKER WEEK / DAY RESOLUTION
 // ============================================================================
 
-export async function fetchCurrentPokerWeek(playerId: string): Promise<PokerWeekSummary | null> {
+export async function fetchCurrentPokerWeek(playerId: PlayerId): Promise<PokerWeekSummary | null> {
   const nowIso = new Date().toISOString();
   const { data, error } = await supabase
     .from('poker_weeks')
@@ -87,14 +101,14 @@ export async function fetchCurrentPokerWeek(playerId: string): Promise<PokerWeek
     .gt('end_timestamp', nowIso)
     .maybeSingle();
   if (error) throw error;
-  return data;
+  return data as PokerWeekSummary | null;
 }
 
 // Simplification (TBD): uses the browser's local clock rather than a
 // timezone-aware library keyed off profiles.timezone. Good enough to
 // bound "today" for MVP; swap for date-fns-tz once player timezone
 // handling is centralized.
-export async function computeTodayBoundaries(boundaryConfigId: string | null): Promise<{ start: Date; end: Date }> {
+export async function computeTodayBoundaries(boundaryConfigId: BoundaryConfigId | null): Promise<{ start: Date; end: Date }> {
   let boundaryTime = '10:00:00';
   if (boundaryConfigId) {
     const { data } = await supabase
@@ -136,8 +150,8 @@ export function toLocalDateKey(d: Date): string {
 // ============================================================================
 
 export async function fetchLockedWeeklyGamePlan(
-  playerId: string,
-  pokerWeekId: string
+  playerId: PlayerId,
+  pokerWeekId: PokerWeekId
 ): Promise<{
   plan: WeeklyGamePlanSummary;
   tournaments: WGPTournamentSlot[];
@@ -152,27 +166,32 @@ export async function fetchLockedWeeklyGamePlan(
     .maybeSingle();
   if (planErr) throw planErr;
   if (!plan) return null;
+  const typedPlan = plan as WeeklyGamePlanSummary;
 
   const [{ data: tournaments, error: tErr }, { data: conditionals, error: cErr }] = await Promise.all([
     supabase
       .from('weekly_game_plan_tournaments')
-      .select('id, weekly_game_plan_id, slot_number, tournament_name, permitted_buy_ins, intended_buy_ins, planned_date')
-      .eq('weekly_game_plan_id', plan.id)
+      .select('id, weekly_game_plan_id, slot_number, tournament_name, permitted_buy_ins, intended_buy_ins, planned_date, buy_in_amount')
+      .eq('weekly_game_plan_id', typedPlan.id)
       .order('slot_number', { ascending: true }),
     supabase
       .from('weekly_game_plan_conditional_tournaments')
-      .select('id, weekly_game_plan_id, tournament_name, permitted_buy_ins, activation_condition')
-      .eq('weekly_game_plan_id', plan.id),
+      .select('id, weekly_game_plan_id, tournament_name, permitted_buy_ins, activation_condition, buy_in_amount')
+      .eq('weekly_game_plan_id', typedPlan.id),
   ]);
   if (tErr) throw tErr;
   if (cErr) throw cErr;
 
-  return { plan, tournaments: tournaments || [], conditionals: conditionals || [] };
+  return {
+    plan: typedPlan,
+    tournaments: (tournaments || []) as WGPTournamentSlot[],
+    conditionals: (conditionals || []) as WGPConditionalTournament[],
+  };
 }
 
 export async function fetchWeeklyBRMAssignment(
-  playerId: string,
-  pokerWeekId: string
+  playerId: PlayerId,
+  pokerWeekId: PokerWeekId
 ): Promise<WeeklyBRMAssignmentSummary | null> {
   const { data, error } = await supabase
     .from('weekly_brm_assignments')
@@ -182,10 +201,10 @@ export async function fetchWeeklyBRMAssignment(
     .not('locked_at', 'is', null)
     .maybeSingle();
   if (error) throw error;
-  return data;
+  return data as WeeklyBRMAssignmentSummary | null;
 }
 
-async function fetchActiveFrameworkVersionId(coachId: string): Promise<string | null> {
+async function fetchActiveFrameworkVersionId(coachId: CoachId): Promise<FrameworkVersionId | null> {
   const { data: fw } = await supabase
     .from('performance_frameworks')
     .select('id')
@@ -200,7 +219,7 @@ async function fetchActiveFrameworkVersionId(coachId: string): Promise<string | 
     .eq('framework_id', fw.id)
     .eq('is_activated', true)
     .maybeSingle();
-  return version?.id ?? null;
+  return version?.id ? asFrameworkVersionId(version.id) : null;
 }
 
 // ============================================================================
@@ -213,7 +232,7 @@ async function fetchActiveFrameworkVersionId(coachId: string): Promise<string | 
 // ============================================================================
 
 export async function computeCapacity(
-  playerId: string,
+  playerId: PlayerId,
   pokerWeek: PokerWeekSummary,
   brmAssignment: WeeklyBRMAssignmentSummary
 ): Promise<CapacityState> {
@@ -294,25 +313,9 @@ export async function computeCapacity(
 // buy-ins) are pulled through verbatim, never freely retyped.
 // ============================================================================
 
-//export async function fetchExistingContractForSession(
-  //playerId: string,
-  //weeklyGamePlanId: string
-//): Promise<SessionContractRow | null> {
-  //const { data, error } = await supabase
-    //.from('session_contracts')
-    //.select('*')
-    //.eq('player_id', playerId)
-    //.eq('weekly_game_plan_id', weeklyGamePlanId)
-    //.in('status', ['VALIDATED', 'LOCKED'])
-    //.order('id', { ascending: false })
-    //.limit(1)
-    //.maybeSingle();
-  //if (error) throw error;
-  //return data;
-//}
 export async function fetchExistingContractForSession(
-  playerId: string,
-  weeklyGamePlanId: string
+  playerId: PlayerId,
+  weeklyGamePlanId: WeeklyGamePlanId
 ): Promise<SessionContractRow | null> {
 
   // STEP 1: Check if an ACTIVE session exists
@@ -356,8 +359,8 @@ export async function fetchExistingContractForSession(
   return validatedContract;
 }
 export async function createValidatedSessionContract(params: {
-  playerId: string;
-  coachId: string;
+  playerId: PlayerId;
+  coachId: CoachId;
   plan: WeeklyGamePlanSummary;
   brmAssignment: WeeklyBRMAssignmentSummary;
   capacity: CapacityState;
@@ -403,6 +406,7 @@ export async function createValidatedSessionContract(params: {
         slot_number: slot.slot_number,
         tournament_name: slot.tournament_name,
         permitted_buy_ins: slot.permitted_buy_ins,
+        buy_in_amount: slot.buy_in_amount,
       }))
     );
     if (stErr) throw stErr;
@@ -416,6 +420,7 @@ export async function createValidatedSessionContract(params: {
         tournament_name: c.tournament_name,
         activation_condition: c.activation_condition,
         permitted_buy_ins: c.permitted_buy_ins,
+        buy_in_amount: c.buy_in_amount,
       }))
     );
     if (scErr) throw scErr;
@@ -434,9 +439,9 @@ export async function createValidatedSessionContract(params: {
 // ============================================================================
 
 export async function lockContractAndStartSession(params: {
-  contractId: string;
-  preparationId: string;
-}): Promise<{ sessionId: string }> {
+  contractId: SessionContractId;
+  preparationId: PreparationId;
+}): Promise<{ sessionId: SessionId }> {
   const { data, error } = await supabase.rpc('perform_start_session', {
     p_contract_id: params.contractId,
     p_preparation_id: params.preparationId,
@@ -446,7 +451,7 @@ export async function lockContractAndStartSession(params: {
   // perform_start_session returns jsonb, so the generated client type can
   // only say `Json` — cast once, here, to the shape the RPC actually returns.
   const rpcResult = data as unknown as { session_id: string };
-  return { sessionId: rpcResult.session_id };
+  return { sessionId: asSessionId(rpcResult.session_id) };
 }
 
 // ============================================================================
@@ -454,7 +459,7 @@ export async function lockContractAndStartSession(params: {
 // Original contract stays intact; substitution is appended, never edited in place.
 // ============================================================================
 
-export async function fetchSubstitutions(contractId: string): Promise<SessionContractSubstitutionRow[]> {
+export async function fetchSubstitutions(contractId: SessionContractId): Promise<SessionContractSubstitutionRow[]> {
   const { data, error } = await supabase
     .from('session_contract_substitutions')
     .select('*')
@@ -465,10 +470,11 @@ export async function fetchSubstitutions(contractId: string): Promise<SessionCon
 }
 
 export async function substituteTournament(params: {
-  contractId: string;
-  originalSlotId: string | null;
+  contractId: SessionContractId;
+  originalSlotId: WGPTournamentSlotId | null;
   replacementTournamentName: string;
   replacementPermittedBuyIns: number;
+  replacementBuyInAmount: number;
   reason: string;
   passedBrmValidation: boolean;
 }) {
@@ -479,6 +485,7 @@ export async function substituteTournament(params: {
       original_slot_id: params.originalSlotId,
       replacement_tournament_name: params.replacementTournamentName,
       replacement_permitted_buy_ins: params.replacementPermittedBuyIns,
+      replacement_buy_in_amount: params.replacementBuyInAmount,
       reason: params.reason,
       passed_brm_validation: params.passedBrmValidation,
     })
@@ -488,7 +495,7 @@ export async function substituteTournament(params: {
   return data;
 }
 
-export async function fetchLockedContractTournaments(contractId: string): Promise<SessionContractTournamentRow[]> {
+export async function fetchLockedContractTournaments(contractId: SessionContractId): Promise<SessionContractTournamentRow[]> {
   const { data, error } = await supabase
     .from('session_contract_tournaments')
     .select('*')
@@ -496,4 +503,96 @@ export async function fetchLockedContractTournaments(contractId: string): Promis
     .order('slot_number', { ascending: true });
   if (error) throw error;
   return data || [];
+}
+
+// The BRM level a locked contract's substitutions must be re-checked
+// against (same slot-rule table validateWeeklyGamePlan enforces at plan
+// creation) — resolved via the contract's pinned brm_assignment_id, not the
+// player's *current* Weekly BRM Assignment, since a substitution made mid-
+// session must validate against the level that was actually locked for it.
+export async function fetchBRMLevelIdForContract(contractId: SessionContractId): Promise<BRMLevelId> {
+  const { data: contract, error: cErr } = await supabase
+    .from('session_contracts')
+    .select('brm_assignment_id')
+    .eq('id', contractId)
+    .single();
+  if (cErr) throw cErr;
+
+  const { data: assignment, error: aErr } = await supabase
+    .from('weekly_brm_assignments')
+    .select('brm_level_id')
+    .eq('id', contract.brm_assignment_id)
+    .single();
+  if (aErr) throw aErr;
+
+  return assignment.brm_level_id as BRMLevelId;
+}
+
+// ============================================================================
+// CONDITIONAL TOURNAMENTS — live "exercise" during play (PRD §5's "applicable
+// conditional tournaments"), not just SessionContractView's contract-creation-
+// time checkboxes. Evaluation of a conditional's activation_condition text is
+// always the player's own judgment call, never automated — this only lets
+// them act on that judgment call live, in any session, not just up front.
+// ============================================================================
+
+// Every conditional tournament on the session's locked Weekly Game Plan —
+// not filtered to only the ones already activated on the contract, so the
+// player always has the option to exercise any of them, every session.
+export async function fetchConditionalTournamentsForSession(
+  sessionId: SessionId
+): Promise<{ contractId: SessionContractId; conditionals: WGPConditionalTournament[] } | null> {
+  const { data: session, error: sErr } = await supabase
+    .from('sessions')
+    .select('contract_id')
+    .eq('id', sessionId)
+    .single();
+  if (sErr) throw sErr;
+  if (!session.contract_id) return null;
+
+  const { data: contract, error: cErr } = await supabase
+    .from('session_contracts')
+    .select('id, weekly_game_plan_id')
+    .eq('id', session.contract_id)
+    .single();
+  if (cErr) throw cErr;
+
+  const { data: conditionals, error: condErr } = await supabase
+    .from('weekly_game_plan_conditional_tournaments')
+    .select('id, weekly_game_plan_id, tournament_name, permitted_buy_ins, activation_condition, buy_in_amount')
+    .eq('weekly_game_plan_id', contract.weekly_game_plan_id);
+  if (condErr) throw condErr;
+
+  return {
+    contractId: contract.id as SessionContractId,
+    conditionals: (conditionals || []) as WGPConditionalTournament[],
+  };
+}
+
+// Idempotent: activating the same conditional twice (e.g. once pre-selected
+// in SessionContractView, once exercised live) is a no-op the second time —
+// mirrors createValidatedSessionContract's insert shape so a row activated
+// either way is indistinguishable to tournaments.ts's compliance matching.
+export async function activateConditionalTournament(
+  contractId: SessionContractId,
+  conditional: WGPConditionalTournament
+): Promise<void> {
+  const { data: existing, error: exErr } = await supabase
+    .from('session_contract_conditional_tournaments')
+    .select('id')
+    .eq('session_contract_id', contractId)
+    .eq('source_wgp_conditional_id', conditional.id)
+    .maybeSingle();
+  if (exErr) throw exErr;
+  if (existing) return;
+
+  const { error } = await supabase.from('session_contract_conditional_tournaments').insert({
+    session_contract_id: contractId,
+    source_wgp_conditional_id: conditional.id,
+    tournament_name: conditional.tournament_name,
+    activation_condition: conditional.activation_condition,
+    permitted_buy_ins: conditional.permitted_buy_ins,
+    buy_in_amount: conditional.buy_in_amount,
+  });
+  if (error) throw error;
 }

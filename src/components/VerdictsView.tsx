@@ -29,9 +29,10 @@ import { resolveCoachId } from '../lib/supabase';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
 import DeepAnalysisPanel from './DeepAnalysisPanel';
+import { PlayerId, SessionId, VerdictId } from '../types/ids';
 
 interface Props {
-  userId: string;
+  userId: PlayerId;
 }
 
 const CONFIDENCE_TONE: Record<EvidenceConfidence, string> = {
@@ -88,7 +89,7 @@ function FactorRow({ index, item }: { index: number; item: VerdictEvidenceItem }
 // fetched once the player actually taps the link, not on every Verdict
 // Card render (most views never need the raw occurrence list, just the
 // summarized evidence bullets above it).
-function MistakesLink({ sessionId }: { sessionId: string }) {
+function MistakesLink({ sessionId }: { sessionId: SessionId }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,7 +152,7 @@ function EvidenceColumn({
   title: string;
   items: VerdictEvidenceItem[];
   tone: 'neutral' | 'risk';
-  sessionId?: string;
+  sessionId?: SessionId;
 }) {
   const isRisk = tone === 'risk';
   return (
@@ -314,7 +315,7 @@ function VerdictCard({ detail, onGoDeeper, goDeeperEnabled }: { detail: VerdictD
 export default function VerdictsView({ userId }: Props) {
   const { data: history, loading: historyLoading, error: historyError } = useAsync(() => fetchVerdictHistory(userId), [userId]);
   const { data: coachId } = useAsync(() => resolveCoachId(userId, 'PLAYER'), [userId]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<VerdictId | null>(null);
   const [deepAnalysisOpen, setDeepAnalysisOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
 

@@ -6,10 +6,11 @@ import { endSession, EndSessionResult, TournamentFinish, MistakeTagInput } from 
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage, medalColorClass } from '../lib/utils';
 import { MinimalSpeechRecognition, getSpeechRecognitionCtor } from '../lib/speechRecognition';
+import { SessionId, PlayerId, asTournamentId, asExecutionActionId } from '../types/ids';
 
 interface Props {
-  sessionId: string;
-  playerId: string;
+  sessionId: SessionId;
+  playerId: PlayerId;
   onComplete: (result: EndSessionResult) => void;
   onGoBackToEdit: () => Promise<void>;
 }
@@ -123,7 +124,7 @@ export default function SessionReview({ sessionId, playerId, onComplete, onGoBac
     setError(null);
     try {
       const tournamentFinishes: TournamentFinish[] = unfinalized.map((t) => ({
-        tournamentId: t.id,
+        tournamentId: asTournamentId(t.id),
         winningsGross: Number(finishes[t.id]?.winningsGross ?? 0),
         bestRank: finishes[t.id]?.bestRank,
         worstRank: finishes[t.id]?.worstRank,
@@ -131,7 +132,7 @@ export default function SessionReview({ sessionId, playerId, onComplete, onGoBac
         finalTableYn: !!finishes[t.id]?.finalTableYn,
         comments: finishes[t.id]?.comments,
       }));
-      const mistakeTags: MistakeTagInput[] = Object.values(selectedTags).map((v) => ({ executionActionId: v.actionId }));
+      const mistakeTags: MistakeTagInput[] = Object.values(selectedTags).map((v) => ({ executionActionId: asExecutionActionId(v.actionId) }));
       const res = await endSession({ sessionId, playerId, tournamentFinishes, mistakeTags, reflectionNote: reflection });
       setResult(res);
       setStep('done');

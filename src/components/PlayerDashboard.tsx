@@ -5,8 +5,9 @@ import { fetchCurrentBankroll, fetchCurrentWeekNetPnl, fetchRecentCapitalMovemen
 import { formatCurrency, medalColorClass, getErrorMessage } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import CapitalMovementModal from './CapitalMovementModal';
+import { PlayerId } from '../types/ids';
 
-export function PlayerDashboard({ userId, onStartPreparation }: { userId: string; onStartPreparation: () => void }) {
+export function PlayerDashboard({ userId, onStartPreparation }: { userId: PlayerId; onStartPreparation: () => void }) {
   const { data, loading, error } = useAsync(() => {
     if (!userId) throw new Error('No user ID available.');
     return fetchPlayerDashboardData(userId);
@@ -68,13 +69,13 @@ export function PlayerDashboard({ userId, onStartPreparation }: { userId: string
   if (error) return <div>Error: {error}</div>;
   if (!data) return null;
 
-  const { brmAssignment, sessions, boundaryConfig, capacity } = data;
+  const { displayName, brmAssignment, sessions, boundaryConfig, capacity } = data;
 
   return (
     <div className="p-6 space-y-8">
       {/* 1. Greeting */}
       <div className="text-14 font-mono text-text-muted">
-        Welcome, Poker Player. Current Poker Day window: {boundaryConfig ? `resets daily at ${boundaryConfig.poker_day_boundary_time}` : 'Pending Boundary Configuration'}
+        Welcome, {displayName || 'Poker Player'}. Current Poker Day window: {boundaryConfig ? `resets daily at ${boundaryConfig.poker_day_boundary_time}` : 'Pending Boundary Configuration'}
       </div>
 
       {/* 2. Stat Cards */}

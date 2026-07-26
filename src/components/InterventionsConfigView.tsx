@@ -38,15 +38,25 @@ import { fetchTracksForCoach, ESCALATION_LADDER, stageLabel } from '../lib/escal
 import { fetchCoachRoster, CoachRosterEntry } from '../lib/coachRoster';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
+import {
+  CoachId,
+  PlayerId,
+  ExecutionActionId,
+  InterventionLibraryItemId,
+  asPlayerId,
+  asExecutionActionId,
+  asInterventionLibraryItemId,
+  asInterventionAssignmentId,
+} from '../types/ids';
 
 export interface AssignmentPrefill {
-  playerId: string;
-  executionActionId: string;
+  playerId: PlayerId;
+  executionActionId: ExecutionActionId;
   token: number;
 }
 
 interface Props {
-  coachId: string;
+  coachId: CoachId;
   prefillAssignment?: AssignmentPrefill | null;
   onPrefillConsumed?: () => void;
 }
@@ -99,7 +109,7 @@ export default function InterventionsConfigView({ coachId, prefillAssignment, on
 
 // --- Library -----------------------------------------------------------
 
-function LibrarySection({ coachId }: { coachId: string }) {
+function LibrarySection({ coachId }: { coachId: CoachId }) {
   const { data: library, loading, error, reload } = useAsync(() => fetchLibrary(coachId), [coachId]);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -145,7 +155,7 @@ function LibrarySection({ coachId }: { coachId: string }) {
         setCreatingNew(false);
         setSelectedId(created.id);
       } else {
-        await updateLibraryItem(selected!.id, fields);
+        await updateLibraryItem(asInterventionLibraryItemId(selected!.id), fields);
         await reload();
       }
     } catch (err) {
@@ -159,7 +169,7 @@ function LibrarySection({ coachId }: { coachId: string }) {
     if (!selected) return;
     setSaving(true);
     try {
-      await setLibraryItemActive(selected.id, !selected.is_active);
+      await setLibraryItemActive(asInterventionLibraryItemId(selected.id), !selected.is_active);
       await reload();
     } catch (err) {
       setActionError(getErrorMessage(err));
@@ -298,7 +308,7 @@ function AssignmentsSection({
   prefillAssignment,
   onPrefillConsumed,
 }: {
-  coachId: string;
+  coachId: CoachId;
   prefillAssignment?: AssignmentPrefill | null;
   onPrefillConsumed?: () => void;
 }) {
@@ -307,9 +317,9 @@ function AssignmentsSection({
   const { data: library } = useAsync(() => fetchLibrary(coachId), [coachId]);
   const { data: tracks } = useAsync(() => fetchTracksForCoach(coachId), [coachId]);
 
-  const [playerId, setPlayerId] = useState('');
-  const [selectedActionId, setSelectedActionId] = useState('');
-  const [libraryItemId, setLibraryItemId] = useState('');
+  const [playerId, setPlayerId] = useState<PlayerId | ''>('');
+  const [selectedActionId, setSelectedActionId] = useState<ExecutionActionId | ''>('');
+  const [libraryItemId, setLibraryItemId] = useState<InterventionLibraryItemId | ''>('');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -384,7 +394,7 @@ function AssignmentsSection({
   async function handleStatus(id: string, status: 'COMPLETED' | 'CANCELLED') {
     setSaving(true);
     try {
-      await setAssignmentStatus(id, status);
+      await setAssignmentStatus(asInterventionAssignmentId(id), status);
       await reload();
     } catch (err) {
       setActionError(getErrorMessage(err));
@@ -401,7 +411,7 @@ function AssignmentsSection({
           <select
             value={playerId}
             onChange={(e) => {
-              setPlayerId(e.target.value);
+              setPlayerId(asPlayerId(e.target.value));
               setSelectedActionId('');
               setLibraryItemId('');
             }}
@@ -427,7 +437,7 @@ function AssignmentsSection({
               <select
                 value={selectedActionId}
                 onChange={(e) => {
-                  setSelectedActionId(e.target.value);
+                  setSelectedActionId(asExecutionActionId(e.target.value));
                   setLibraryItemId('');
                 }}
                 className="bg-ink border border-border focus:border-accent-bronze focus:outline-none rounded-[6px] p-2 text-13 text-text-primary transition-colors min-w-[220px]"
@@ -444,7 +454,7 @@ function AssignmentsSection({
               <label className="text-11 text-text-muted">Intervention</label>
               <select
                 value={libraryItemId}
-                onChange={(e) => setLibraryItemId(e.target.value)}
+                onChange={(e) => setLibraryItemId(asInterventionLibraryItemId(e.target.value))}
                 disabled={!selectedTrack}
                 className="bg-ink border border-border focus:border-accent-bronze focus:outline-none rounded-[6px] p-2 text-13 text-text-primary transition-colors min-w-[200px] disabled:opacity-40"
               >

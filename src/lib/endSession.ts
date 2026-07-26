@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { computeEscalationUpdateForOccurrence, Severity } from './escalationEngine';
+import { computeEscalationUpdateForOccurrence, Severity, SeverityHistoryEvent } from './escalationEngine';
 import { computeOutcomeMedal } from './outcomeEngine';
 import { classifyVerdict, buildHeadline} from './verdictEngine';
 import { scoreAllDimensions, computeExecutionMedal, OccurrenceForScoring, DimensionResult, Dimension, EXECUTION_DIMENSIONS } from './executionEngine';
@@ -8,9 +8,14 @@ import { fetchBehavioralProfile } from './behavioralProfile';
 import { formatCurrency } from './utils';
 import { requestVerdictProse } from './verdictProse';
 import { requestVerdictReflection } from './verdictReflection';
+import {
+  SessionId, PlayerId, TournamentId, ExecutionActionId, VerdictId,
+  ExecutionAssessmentId, OutcomeAssessmentId,
+  asTournamentId, asExecutionActionId, asVerdictId, asExecutionAssessmentId, asOutcomeAssessmentId,
+} from '../types/ids';
 
 export interface TournamentFinish {
-  tournamentId: string;
+  tournamentId: TournamentId;
   winningsGross: number;
   bestRank?: number;
   worstRank?: number;
@@ -18,7 +23,7 @@ export interface TournamentFinish {
   finalTableYn: boolean;
   comments?: string;
 }
-export interface MistakeTagInput { executionActionId: string; tournamentId?: string; }
+export interface MistakeTagInput { executionActionId: ExecutionActionId; tournamentId?: TournamentId; }
 
 // Verdict Card §2.10 item 6 — "one forward-looking line." A hard gate always
 // takes priority (it's the most severe possible evidence); otherwise names
@@ -38,10 +43,10 @@ function buildNextStandard(results: DimensionResult[], hardGateTriggered: boolea
 }
 
 export interface EndSessionResult {
-  sessionId: string;
-  verdictId: string;
-  executionAssessmentId: string;
-  outcomeAssessmentId: string;
+  sessionId: SessionId;
+  verdictId: VerdictId;
+  executionAssessmentId: ExecutionAssessmentId;
+  outcomeAssessmentId: OutcomeAssessmentId;
   executionMedal: string;
   outcomeMedal: string;
   verdictClassification: string;
@@ -55,7 +60,7 @@ export interface EndSessionResult {
 // separate step (below), matching session_status: ACTIVE → REVIEW_PENDING
 // → FINALIZED.
 // ---------------------------------------------------------------------------
-export async function stopSessionForReview(sessionId: string): Promise<void> {
+export async function stopSessionForReview(sessionId: SessionId): Promise<void> {
   const { error } = await supabase
     .from('sessions')
     .update({ status: 'REVIEW_PENDING', end_time: new Date().toISOString() })
@@ -70,7 +75,7 @@ export async function stopSessionForReview(sessionId: string): Promise<void> {
 // perform_end_session has run (status FINALIZED), both the RLS policy this
 // relies on and fn_check_session_finalized's trigger block it outright, same
 // as every other direct mutation of a finalized session.
-export async function resumeSessionForEditing(sessionId: string): Promise<void> {
+export async function resumeSessionForEditing(sessionId: SessionId): Promise<void> {
   const { error } = await supabase
     .from('sessions')
     .update({ status: 'ACTIVE', end_time: null })
@@ -85,8 +90,8 @@ export async function resumeSessionForEditing(sessionId: string): Promise<void> 
 // above it here is pure client-side computation feeding that call.
 // ---------------------------------------------------------------------------
 export async function endSession(params: {
-  sessionId: string;
-  playerId: string;
+  sessionId: SessionId;
+  playerId: PlayerId;
   tournamentFinishes: TournamentFinish[];
   mistakeTags: MistakeTagInput[];
   reflectionNote?: string;
@@ -103,8 +108,8 @@ export async function endSession(params: {
   if (occErr) throw occErr;
 
   // 2. Resolve dimension / severity / hard-gate for every action referenced.
-  const actionIds = Array.from(new Set([
-    ...(existingOccurrences || []).map((o) => o.execution_action_id),
+  const actionIds: ExecutionActionId[] = Array.from(new Set([
+    ...(existingOccurrences || []).map((o) => asExecutionActionId(o.execution_action_id)),
     ...mistakeTags.map((m) => m.executionActionId),
   ]));
   const { data: actions, error: actErr } = await supabase
@@ -117,8 +122,8 @@ export async function endSession(params: {
   // 3. Chronological timeline: real occurred_at for logged-during-play
   //    occurrences, "now" for freshly-tagged mistakes (always last).
   const nowIso = new Date().toISOString();
-  const timeline = [
-    ...(existingOccurrences || []).map((o) => ({ actionId: o.execution_action_id, occurredAt: o.occurred_at })),
+  const timeline: { actionId: ExecutionActionId; occurredAt: string }[] = [
+    ...(existingOccurrences || []).map((o) => ({ actionId: asExecutionActionId(o.execution_action_id), occurredAt: o.occurred_at })),
     ...mistakeTags.map((m) => ({ actionId: m.executionActionId, occurredAt: nowIso })),
   ].sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
 
@@ -130,7 +135,8 @@ export async function endSession(params: {
   //    result (see the RPC call below); this pass exists purely so the
   //    evidence bullets/verdict-prose step below have dimension ratings and
   //    hard-gate names to describe before that RPC call has happened yet.
-  const runningStage = new Map<string, number>();
+  const runningStage = new Map<ExecutionActionId, number>();
+  const runningSeverityEvents = new Map<ExecutionActionId, SeverityHistoryEvent[]>();
   const scoringOccurrences: OccurrenceForScoring[] = [];
 
   for (const item of timeline) {
@@ -138,9 +144,11 @@ export async function endSession(params: {
     if (!action) continue; // never block end-of-session on a taxonomy resolution gap
     const severity = action.base_severity as Severity;
     const priorStage = runningStage.get(item.actionId);
+    const priorWalkEvents = runningSeverityEvents.get(item.actionId) ?? [];
 
-    const update = await computeEscalationUpdateForOccurrence(playerId, item.actionId, severity, item.occurredAt, priorStage);
+    const update = await computeEscalationUpdateForOccurrence(playerId, item.actionId, severity, item.occurredAt, priorStage, priorWalkEvents);
     runningStage.set(item.actionId, update.new_stage);
+    runningSeverityEvents.set(item.actionId, [...priorWalkEvents, { conditions: update.satisfied_conditions, occurredAt: item.occurredAt }]);
 
     scoringOccurrences.push({
       execution_action_id: item.actionId,
@@ -186,7 +194,7 @@ export async function endSession(params: {
       if (t.final_table_yn) hadFinalTable = true;
       finalizedCount++;
     } else {
-      const finish = finishById.get(t.id);
+      const finish = finishById.get(asTournamentId(t.id));
       if (!finish) continue; // still unfinalized and not part of this review pass (shouldn't happen)
       grossTotal += finish.winningsGross;
       if (finish.itmYn) itmCount++;
@@ -490,7 +498,7 @@ export async function endSession(params: {
   // call it, since this section's whole value is quoting the player's own
   // words back to them.
   const tournamentComments = (allTournaments || [])
-    .map((t) => (t.net_return !== null ? t.comments : finishById.get(t.id)?.comments ?? null))
+    .map((t) => (t.net_return !== null ? t.comments : finishById.get(asTournamentId(t.id))?.comments ?? null))
     .filter((c): c is string => !!c && !!c.trim());
 
   const hasAnyFreeText =
@@ -598,9 +606,9 @@ export async function endSession(params: {
 
   return {
     sessionId,
-    verdictId: rpcResult.verdict_id,
-    executionAssessmentId: rpcResult.execution_assessment_id,
-    outcomeAssessmentId: rpcResult.outcome_assessment_id,
+    verdictId: asVerdictId(rpcResult.verdict_id),
+    executionAssessmentId: asExecutionAssessmentId(rpcResult.execution_assessment_id),
+    outcomeAssessmentId: asOutcomeAssessmentId(rpcResult.outcome_assessment_id),
     executionMedal: rpcResult.execution_medal,
     outcomeMedal: rpcResult.outcome_medal,
     verdictClassification: rpcResult.verdict_classification,

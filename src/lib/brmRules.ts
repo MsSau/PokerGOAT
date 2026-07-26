@@ -16,6 +16,7 @@
 // not to invent values for them.
 
 import { supabase } from './supabase';
+import { BRMLevelId } from '../types/ids';
 
 export interface SlotRule {
   slotNumber: number;
@@ -52,7 +53,7 @@ export function getSlotRulesForLevel(levelIndex: number): SlotRule[] | null {
 }
 
 /** Live, coach-configured slot rules for one specific brm_levels row. Null if the coach hasn't configured any yet. */
-export async function fetchSlotRulesForBRMLevel(brmLevelId: string): Promise<SlotRule[] | null> {
+export async function fetchSlotRulesForBRMLevel(brmLevelId: BRMLevelId): Promise<SlotRule[] | null> {
   const { data, error } = await supabase
     .from('brm_level_slot_rules')
     .select('*')
@@ -61,4 +62,21 @@ export async function fetchSlotRulesForBRMLevel(brmLevelId: string): Promise<Slo
   if (error) throw error;
   if (!data || data.length === 0) return null;
   return data.map((r) => ({ slotNumber: r.slot_number, maxBuyIns: r.max_buy_ins }));
+}
+
+// The flat per-tournament monetary cap (PRD §4's "Max Buy-in/Tournament")
+// lives directly on brm_levels — same column tournaments.ts's
+// fetchMaxTournamentBuyIn reads, but keyed off a brm_levels.id directly
+// rather than a weekly_brm_assignments.id, since callers like
+// SubstitutionPanel only ever resolve as far as the level, not a specific
+// assignment. Null means the coach hasn't configured this level yet
+// (e.g. Levels 6-8) — nothing to enforce in that case.
+export async function fetchMaxTournamentBuyInForLevel(brmLevelId: BRMLevelId): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('brm_levels')
+    .select('max_tournament_buy_in')
+    .eq('id', brmLevelId)
+    .single();
+  if (error) throw error;
+  return data?.max_tournament_buy_in ?? null;
 }

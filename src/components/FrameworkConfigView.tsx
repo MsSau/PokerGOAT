@@ -23,9 +23,10 @@ import { FrameworkVersion } from '../types';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
 import ReasonModal from './ReasonModal';
+import { CoachId, asFrameworkId, asFrameworkVersionId } from '../types/ids';
 
 interface Props {
-  coachId: string;
+  coachId: CoachId;
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -83,7 +84,7 @@ export default function FrameworkConfigView({ coachId }: Props) {
     if (tab !== 'history' || !selected) return;
     let active = true;
     setHistoryLoading(true);
-    fetchFrameworkVersions(selected.framework.id)
+    fetchFrameworkVersions(asFrameworkId(selected.framework.id))
       .then((v) => active && setHistory(v))
       .catch((err) => active && setActionError(getErrorMessage(err)))
       .finally(() => active && setHistoryLoading(false));
@@ -115,7 +116,7 @@ export default function FrameworkConfigView({ coachId }: Props) {
         setCreatingNew(false);
         setSelectedId(created.framework.id);
       } else if (isDraftEdit) {
-        await updateDraftVersion(selected!.currentVersion.id, fields);
+        await updateDraftVersion(asFrameworkVersionId(selected!.currentVersion.id), fields);
         await reload();
       }
     } catch (err) {
@@ -130,7 +131,7 @@ export default function FrameworkConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await reviseActivatedFramework(selected.framework.id, selected.currentVersion, fields, reason);
+      await reviseActivatedFramework(asFrameworkId(selected.framework.id), selected.currentVersion, fields, reason);
       await reload();
       setReasonModalOpen(false);
     } catch (err) {
@@ -145,7 +146,7 @@ export default function FrameworkConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await activateFramework(coachId, selected.framework.id, selected.currentVersion.id);
+      await activateFramework(coachId, asFrameworkId(selected.framework.id), asFrameworkVersionId(selected.currentVersion.id));
       await reload();
     } catch (err) {
       setActionError(getErrorMessage(err));
@@ -159,7 +160,7 @@ export default function FrameworkConfigView({ coachId }: Props) {
     setActionError(null);
     setSaving(true);
     try {
-      await archiveFramework(selected.framework.id);
+      await archiveFramework(asFrameworkId(selected.framework.id));
       await reload();
       setConfirmingArchive(false);
     } catch (err) {

@@ -19,6 +19,7 @@ import { supabase } from './supabase';
 import { ExecutionTaxonomy, TaxonomyVersion, ExecutionAction } from '../types';
 import { Dimension } from './executionEngine';
 import { Database } from '../types/database';
+import { CoachId, TaxonomyVersionId, ExecutionActionId } from '../types/ids';
 
 export type Severity = Database['public']['Enums']['severity_type'];
 
@@ -31,7 +32,7 @@ export interface ExecutionActionFields {
   is_hard_gate: boolean;
 }
 
-export async function fetchOrCreateTaxonomy(coachId: string): Promise<{ taxonomy: ExecutionTaxonomy; version: TaxonomyVersion }> {
+export async function fetchOrCreateTaxonomy(coachId: CoachId): Promise<{ taxonomy: ExecutionTaxonomy; version: TaxonomyVersion }> {
   const { data: existing, error: fetchError } = await supabase
     .from('execution_taxonomies')
     .select('*')
@@ -71,7 +72,7 @@ export async function fetchOrCreateTaxonomy(coachId: string): Promise<{ taxonomy
 }
 
 /** Canonical + inactive actions belonging to this coach's active taxonomy version — the four dimension tabs. */
-export async function fetchCanonicalActions(taxonomyVersionId: string): Promise<ExecutionAction[]> {
+export async function fetchCanonicalActions(taxonomyVersionId: TaxonomyVersionId): Promise<ExecutionAction[]> {
   const { data, error } = await supabase
     .from('execution_actions')
     .select('*')
@@ -84,7 +85,7 @@ export async function fetchCanonicalActions(taxonomyVersionId: string): Promise<
 }
 
 /** Player-proposed actions awaiting this coach's approval — the always-visible fifth "Proposed" tab. */
-export async function fetchProposedActions(coachId: string): Promise<ExecutionAction[]> {
+export async function fetchProposedActions(coachId: CoachId): Promise<ExecutionAction[]> {
   const { data: players, error: playersError } = await supabase.from('profiles').select('id').eq('coach_id', coachId).eq('role', 'PLAYER');
   if (playersError) throw playersError;
   const playerIds = (players || []).map((p) => p.id);
@@ -101,8 +102,8 @@ export async function fetchProposedActions(coachId: string): Promise<ExecutionAc
 }
 
 export async function createCanonicalAction(
-  coachId: string,
-  taxonomyVersionId: string,
+  coachId: CoachId,
+  taxonomyVersionId: TaxonomyVersionId,
   fields: ExecutionActionFields,
 ): Promise<ExecutionAction> {
   const { data, error } = await supabase
@@ -121,7 +122,7 @@ export async function createCanonicalAction(
 }
 
 /** Edits an already-canonical action's fields — gated behind the mandatory-reason modal. */
-export async function updateCanonicalAction(actionId: string, fields: ExecutionActionFields, reason: string): Promise<ExecutionAction> {
+export async function updateCanonicalAction(actionId: ExecutionActionId, fields: ExecutionActionFields, reason: string): Promise<ExecutionAction> {
   const { data, error } = await supabase
     .from('execution_actions')
     .update({ ...fields, change_reason: reason })
@@ -132,7 +133,7 @@ export async function updateCanonicalAction(actionId: string, fields: ExecutionA
   return data;
 }
 
-export async function setActionActiveStatus(actionId: string, isActive: boolean, reason: string): Promise<ExecutionAction> {
+export async function setActionActiveStatus(actionId: ExecutionActionId, isActive: boolean, reason: string): Promise<ExecutionAction> {
   const { data, error } = await supabase
     .from('execution_actions')
     .update({ status: isActive ? 'CANONICAL_ACTIVE' : 'INACTIVE', change_reason: reason })
@@ -145,9 +146,9 @@ export async function setActionActiveStatus(actionId: string, isActive: boolean,
 
 /** Approving a proposal requires the coach to set every scoring-relevant field — it never inherits defaults silently (PRD §3.3). */
 export async function approveProposedAction(
-  actionId: string,
-  coachId: string,
-  taxonomyVersionId: string,
+  actionId: ExecutionActionId,
+  coachId: CoachId,
+  taxonomyVersionId: TaxonomyVersionId,
   fields: ExecutionActionFields,
 ): Promise<ExecutionAction> {
   const { data, error } = await supabase
@@ -166,7 +167,7 @@ export async function approveProposedAction(
   return data;
 }
 
-export async function rejectProposedAction(actionId: string): Promise<void> {
+export async function rejectProposedAction(actionId: ExecutionActionId): Promise<void> {
   const { error } = await supabase.from('execution_actions').update({ status: 'INACTIVE' }).eq('id', actionId);
   if (error) throw error;
 }

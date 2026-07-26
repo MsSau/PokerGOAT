@@ -18,6 +18,10 @@ import { supabase } from './supabase';
 import { fetchCurrentPokerWeek } from './sessionContract';
 import { fetchBRMConfigForCoach, fetchBRMVersions, currentBRMVersion } from './brmConfig';
 import { runDeescalationForPlayer } from './escalationEngine';
+import {
+  CoachId, PlayerId, PokerWeekId, BoundaryConfigId, BRMLevelId, BankrollBandId, BRMConfigVersionId,
+  asPokerWeekId, asBoundaryConfigId, asBRMLevelId, asBankrollBandId, asBRMConfigVersionId, asBRMConfigId,
+} from '../types/ids';
 
 export interface PokerWeekWindow {
   start: Date;
@@ -50,7 +54,7 @@ export function computeCurrentPokerWeekWindow(boundaryDayOfWeek: number, boundar
   return { start: now, end };
 }
 
-async function resolveBoundaryConfig(coachId: string): Promise<{ id: string; boundaryDayOfWeek: number; boundaryTime: string } | null> {
+async function resolveBoundaryConfig(coachId: CoachId): Promise<{ id: BoundaryConfigId; boundaryDayOfWeek: number; boundaryTime: string } | null> {
   const { data, error } = await supabase
     .from('poker_week_boundary_configs')
     .select('id, boundary_day_of_week, boundary_time')
@@ -59,10 +63,10 @@ async function resolveBoundaryConfig(coachId: string): Promise<{ id: string; bou
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  return { id: data.id, boundaryDayOfWeek: data.boundary_day_of_week, boundaryTime: data.boundary_time };
+  return { id: asBoundaryConfigId(data.id), boundaryDayOfWeek: data.boundary_day_of_week, boundaryTime: data.boundary_time };
 }
 
-async function fetchOrCreateCurrentPokerWeek(coachId: string, playerId: string): Promise<{ id: string }> {
+async function fetchOrCreateCurrentPokerWeek(coachId: CoachId, playerId: PlayerId): Promise<{ id: PokerWeekId }> {
   const existing = await fetchCurrentPokerWeek(playerId);
   if (existing) return { id: existing.id };
 
@@ -86,14 +90,14 @@ async function fetchOrCreateCurrentPokerWeek(coachId: string, playerId: string):
     .select('id')
     .single();
   if (createErr) throw createErr;
-  return { id: created.id };
+  return { id: asPokerWeekId(created.id) };
 }
 
 export interface WeeklyBRMAssignmentPreview {
-  bankrollBandId: string;
+  bankrollBandId: BankrollBandId;
   levelIndex: number;
-  brmLevelId: string | null; // null if the coach hasn't configured this level's registration rules yet (PRD: don't invent values for Levels 6-8)
-  brmConfigVersionId: string;
+  brmLevelId: BRMLevelId | null; // null if the coach hasn't configured this level's registration rules yet (PRD: don't invent values for Levels 6-8)
+  brmConfigVersionId: BRMConfigVersionId;
   currentBankroll: number;
   sessionStopLoss: number;
   dayStopLoss: number;
@@ -108,10 +112,10 @@ export interface WeeklyBRMAssignmentPreview {
  * there's no active config or no band covers the bankroll at all — the
  * PRD §4 "Coach Configuration Required" case.
  */
-export async function previewWeeklyBRMAssignment(coachId: string, playerId: string): Promise<WeeklyBRMAssignmentPreview | null> {
+export async function previewWeeklyBRMAssignment(coachId: CoachId, playerId: PlayerId): Promise<WeeklyBRMAssignmentPreview | null> {
   const config = await fetchBRMConfigForCoach(coachId);
   if (!config) return null;
-  const versions = await fetchBRMVersions(config.id);
+  const versions = await fetchBRMVersions(asBRMConfigId(config.id));
   const active = currentBRMVersion(versions);
   if (!active) return null;
 
@@ -138,10 +142,10 @@ export async function previewWeeklyBRMAssignment(coachId: string, playerId: stri
   if (levelErr) throw levelErr;
 
   return {
-    bankrollBandId: band.id,
+    bankrollBandId: asBankrollBandId(band.id),
     levelIndex: band.level_index,
-    brmLevelId: level?.id ?? null,
-    brmConfigVersionId: active.id,
+    brmLevelId: level?.id ? asBRMLevelId(level.id) : null,
+    brmConfigVersionId: asBRMConfigVersionId(active.id),
     currentBankroll,
     sessionStopLoss: band.session_stop_loss,
     dayStopLoss: band.day_stop_loss,
@@ -152,7 +156,7 @@ export async function previewWeeklyBRMAssignment(coachId: string, playerId: stri
 }
 
 /** True once the player's CURRENT Poker Week (if any) already has a locked BRM assignment. */
-export async function hasCurrentWeekAssignment(playerId: string): Promise<boolean> {
+export async function hasCurrentWeekAssignment(playerId: PlayerId): Promise<boolean> {
   const pokerWeek = await fetchCurrentPokerWeek(playerId);
   if (!pokerWeek) return false;
   const { data, error } = await supabase
@@ -165,7 +169,7 @@ export async function hasCurrentWeekAssignment(playerId: string): Promise<boolea
   return !!data;
 }
 
-async function fetchOpeningCapital(playerId: string): Promise<number> {
+async function fetchOpeningCapital(playerId: PlayerId): Promise<number> {
   const { data, error } = await supabase.from('bankroll_ledger_entries').select('amount').eq('player_id', playerId).eq('entry_type', 'OPENING_CAPITAL');
   if (error) throw error;
   return (data || []).reduce((sum, r) => sum + r.amount, 0);
@@ -173,8 +177,8 @@ async function fetchOpeningCapital(playerId: string): Promise<number> {
 
 /** Creates (and implicitly locks — locked_at defaults to now() at the DB level) the player's Weekly BRM Assignment for the current Poker Week, creating that Poker Week first if it doesn't exist yet. */
 export async function createWeeklyBRMAssignment(
-  coachId: string,
-  playerId: string,
+  coachId: CoachId,
+  playerId: PlayerId,
   preview: WeeklyBRMAssignmentPreview,
   reason: string,
 ): Promise<void> {

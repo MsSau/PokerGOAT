@@ -20,6 +20,7 @@
 
 import { supabase } from './supabase';
 import { PerformanceFramework, FrameworkVersion } from '../types';
+import { CoachId, FrameworkId, FrameworkVersionId } from '../types/ids';
 
 export interface FrameworkWithCurrentVersion {
   framework: PerformanceFramework;
@@ -33,7 +34,7 @@ export interface FrameworkEditableFields {
 }
 
 /** All frameworks (any status) owned by this coach, each paired with its current working/active version. */
-export async function fetchFrameworksForCoach(coachId: string): Promise<FrameworkWithCurrentVersion[]> {
+export async function fetchFrameworksForCoach(coachId: CoachId): Promise<FrameworkWithCurrentVersion[]> {
   const { data: frameworks, error: fwError } = await supabase
     .from('performance_frameworks')
     .select('*')
@@ -68,7 +69,7 @@ export async function fetchFrameworksForCoach(coachId: string): Promise<Framewor
 }
 
 /** Full version history for one framework, newest first — the Version History tab. */
-export async function fetchFrameworkVersions(frameworkId: string): Promise<FrameworkVersion[]> {
+export async function fetchFrameworkVersions(frameworkId: FrameworkId): Promise<FrameworkVersion[]> {
   const { data, error } = await supabase
     .from('framework_versions')
     .select('*')
@@ -80,7 +81,7 @@ export async function fetchFrameworkVersions(frameworkId: string): Promise<Frame
 
 /** Creates a new Draft framework with its first (unactivated, freely-editable) version. */
 export async function createFramework(
-  coachId: string,
+  coachId: CoachId,
   fields: FrameworkEditableFields,
 ): Promise<FrameworkWithCurrentVersion> {
   const { data: framework, error: fwError } = await supabase
@@ -108,7 +109,7 @@ export async function createFramework(
 }
 
 /** In-place edit of a not-yet-activated (Draft) version — no reason required, nothing binding yet. */
-export async function updateDraftVersion(versionId: string, fields: FrameworkEditableFields): Promise<FrameworkVersion> {
+export async function updateDraftVersion(versionId: FrameworkVersionId, fields: FrameworkEditableFields): Promise<FrameworkVersion> {
   const { data, error } = await supabase
     .from('framework_versions')
     .update({
@@ -130,7 +131,7 @@ export async function updateDraftVersion(versionId: string, fields: FrameworkEdi
  * previous version off.
  */
 export async function reviseActivatedFramework(
-  frameworkId: string,
+  frameworkId: FrameworkId,
   currentVersion: FrameworkVersion,
   fields: FrameworkEditableFields,
   reason: string,
@@ -175,7 +176,7 @@ export async function reviseActivatedFramework(
  * consumer that reads "the" active framework assumes a single row), sets
  * this one Active, and flips its current version on.
  */
-export async function activateFramework(coachId: string, frameworkId: string, versionId: string): Promise<void> {
+export async function activateFramework(coachId: CoachId, frameworkId: FrameworkId, versionId: FrameworkVersionId): Promise<void> {
   const { error: archiveError } = await supabase
     .from('performance_frameworks')
     .update({ status: 'ARCHIVED' })
@@ -201,7 +202,7 @@ export async function activateFramework(coachId: string, frameworkId: string, ve
   }
 }
 
-export async function archiveFramework(frameworkId: string): Promise<void> {
+export async function archiveFramework(frameworkId: FrameworkId): Promise<void> {
   const { error } = await supabase.from('performance_frameworks').update({ status: 'ARCHIVED' }).eq('id', frameworkId);
   if (error) throw error;
 }

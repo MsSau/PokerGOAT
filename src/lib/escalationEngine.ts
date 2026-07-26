@@ -1,11 +1,15 @@
 import { supabase } from './supabase';
 import { Database } from '../types/database';
 import { fetchCurrentPokerWeek } from './sessionContract';
+import {
+  PlayerId, ExecutionActionId, EscalationTrackId,
+  asExecutionActionId, asEscalationTrackId,
+} from '../types/ids';
 
 export type Severity = Database['public']['Enums']['severity_type'];
 
 export interface EscalationUpdate {
-  execution_action_id: string;
+  execution_action_id: ExecutionActionId;
   old_stage: number;
   new_stage: number;
   satisfied_conditions: string[];
@@ -18,7 +22,32 @@ export interface EscalationUpdate {
 const RECENT_WINDOW_DAYS = 7;
 const SHORT_TERM_WINDOW_DAYS = 30;
 
-async function fetchTrackAndHistory(playerId: string, actionId: string) {
+// Mirrors evaluateEscalationTransition's `satisfied` output strings below —
+// keep in sync if that function's condition names ever change. Used to
+// reconstruct "was there ever a prior MAJOR/CRITICAL occurrence for this
+// track" from escalation_events.satisfied_conditions (the actual persisted
+// record of which severity path fired at each past transition), rather than
+// inferring it from raw stage position — a track's stage doesn't uniquely
+// identify severity, since e.g. MINOR can climb to stage 3 the same way a
+// first-ever MAJOR does.
+const MAJOR_SATISFIED_CONDITIONS = ['first_ever_major', 'repeat_major_recent_window', 'major_after_coach_directive', 'major_after_intervention'];
+const CRITICAL_SATISFIED_CONDITIONS = ['first_ever_critical', 'repeat_critical_recent_window', 'critical_after_coaching_or_intervention', 'further_critical_after_stage3'];
+
+function hasAnyCondition(conditions: string[], of: readonly string[]): boolean {
+  return conditions.some((c) => of.includes(c));
+}
+
+// A past severity-relevant transition for this track, with the timestamp it
+// occurred at (for recency checks). Sourced either from escalation_events
+// (cross-session, DB-persisted) or from earlier occurrences already
+// processed in the current end-of-session walk (not yet persisted — see
+// computeEscalationUpdateForOccurrence's priorWalkEvents param).
+export interface SeverityHistoryEvent {
+  conditions: string[];
+  occurredAt: string;
+}
+
+async function fetchTrackAndHistory(playerId: PlayerId, actionId: ExecutionActionId) {
   const { data: track } = await supabase
     .from('escalation_tracks')
     .select('id, current_stage_index, last_occurrence_at')
@@ -34,14 +63,31 @@ async function fetchTrackAndHistory(playerId: string, actionId: string) {
     .order('occurred_at', { ascending: true });
   if (error) throw error;
 
-  // TBD: coach_directives has no execution_action_id column in the current
-  // schema, so directive-to-action linkage isn't modeled yet. For MVP any
-  // directive counts as "referencing this action" — tighten once that FK
-  // exists.
+  let severityEvents: SeverityHistoryEvent[] = [];
+  if (track) {
+    const { data: events, error: evError } = await supabase
+      .from('escalation_events')
+      .select('satisfied_conditions, created_at')
+      .eq('track_id', track.id)
+      .order('created_at', { ascending: true });
+    if (evError) throw evError;
+    severityEvents = (events || []).map((e) => ({
+      conditions: (e.satisfied_conditions as string[] | null) ?? [],
+      occurredAt: e.created_at ?? new Date(0).toISOString(),
+    }));
+  }
+
+  // Scoped to directives that actually name this action (execution_action_id
+  // FK) and haven't been retracted — a directive recorded before that
+  // column existed, left general, or since retracted by the coach never
+  // counts toward this action's escalation. Mirrors perform_end_session's
+  // identical tightening.
   const { data: directives } = await supabase
     .from('coach_directives')
     .select('id, created_at')
-    .eq('player_id', playerId);
+    .eq('player_id', playerId)
+    .eq('execution_action_id', actionId)
+    .is('retracted_at', null);
 
   const { data: interventions } = await supabase
     .from('intervention_assignments')
@@ -49,7 +95,7 @@ async function fetchTrackAndHistory(playerId: string, actionId: string) {
     .eq('player_id', playerId)
     .eq('execution_action_id', actionId);
 
-  return { track, occurrences: occurrences || [], directives: directives || [], interventions: interventions || [] };
+  return { track, occurrences: occurrences || [], severityEvents, directives: directives || [], interventions: interventions || [] };
 }
 
 function withinDays(dateIso: string, days: number, referenceIso: string): boolean {
@@ -105,16 +151,21 @@ export function evaluateEscalationTransition(params: {
  * new_stage back in as `runningStageOverride` when processing a second
  * occurrence of the SAME action later in the same session — that keeps
  * a multi-occurrence session correctly sequential (§12's "post-event
- * escalation stage" rule).
+ * escalation stage" rule). Likewise pass the returned satisfied_conditions
+ * (wrapped as a SeverityHistoryEvent) back in via `priorWalkEvents` so a
+ * second same-session occurrence sees the first's MAJOR/CRITICAL history
+ * even though it hasn't been persisted to escalation_events yet (that only
+ * happens once, atomically, at end-of-session finalization).
  */
 export async function computeEscalationUpdateForOccurrence(
-  playerId: string,
-  actionId: string,
+  playerId: PlayerId,
+  actionId: ExecutionActionId,
   severity: Severity,
   occurredAtIso: string,
   runningStageOverride?: number,
+  priorWalkEvents: SeverityHistoryEvent[] = [],
 ): Promise<EscalationUpdate> {
-  const { track, occurrences, directives, interventions } = await fetchTrackAndHistory(playerId, actionId);
+  const { track, occurrences, severityEvents, directives, interventions } = await fetchTrackAndHistory(playerId, actionId);
   const currentStage = runningStageOverride ?? track?.current_stage_index ?? 0;
 
   const priorOccurrencesRecent = occurrences.filter((o) =>
@@ -125,9 +176,12 @@ export async function computeEscalationUpdateForOccurrence(
   ).length;
 
   const priorMinorAtStage2 = currentStage === 2 && priorOccurrencesShortTerm > 0;
-  const priorMajorEver = currentStage >= 3;
-  const priorCriticalEver = currentStage >= 5;
-  const priorCriticalRecent = priorCriticalEver && priorOccurrencesRecent > 0;
+  const allSeverityHistory = [...severityEvents, ...priorWalkEvents];
+  const priorMajorEver = allSeverityHistory.some((e) => hasAnyCondition(e.conditions, MAJOR_SATISFIED_CONDITIONS));
+  const priorCriticalEver = allSeverityHistory.some((e) => hasAnyCondition(e.conditions, CRITICAL_SATISFIED_CONDITIONS));
+  const priorCriticalRecent = allSeverityHistory.some(
+    (e) => hasAnyCondition(e.conditions, CRITICAL_SATISFIED_CONDITIONS) && withinDays(e.occurredAt, RECENT_WINDOW_DAYS, occurredAtIso),
+  );
   const priorDirective = directives.some((d) => d.created_at && new Date(d.created_at) < new Date(occurredAtIso));
   const priorIntervention = interventions.some((i) => i.assigned_at && new Date(i.assigned_at) < new Date(occurredAtIso));
 
@@ -215,7 +269,7 @@ export function evaluateDeescalation(
 // private helper, since createWeeklyBRMAssignment (this function's one
 // caller) always creates/resolves the current Poker Week just before
 // calling runDeescalationForPlayer, so a current week is expected to exist.
-async function resolvePokerDayBoundaryTime(playerId: string): Promise<string> {
+async function resolvePokerDayBoundaryTime(playerId: PlayerId): Promise<string> {
   const week = await fetchCurrentPokerWeek(playerId);
   if (!week?.boundary_config_id) return DEFAULT_POKER_DAY_BOUNDARY_TIME;
 
@@ -229,8 +283,8 @@ async function resolvePokerDayBoundaryTime(playerId: string): Promise<string> {
 }
 
 export interface DeescalationOutcome {
-  track_id: string;
-  execution_action_id: string;
+  track_id: EscalationTrackId;
+  execution_action_id: ExecutionActionId;
   old_stage: number;
   new_stage: number;
 }
@@ -270,7 +324,7 @@ async function fetchOrCreateActiveEscalationRuleVersionId(): Promise<string> {
  * history pattern escalation itself and coach overrides both use. Returns
  * only the tracks that actually changed.
  */
-export async function runDeescalationForPlayer(playerId: string, nowIso: string = new Date().toISOString()): Promise<DeescalationOutcome[]> {
+export async function runDeescalationForPlayer(playerId: PlayerId, nowIso: string = new Date().toISOString()): Promise<DeescalationOutcome[]> {
   const { data: tracks, error } = await supabase
     .from('escalation_tracks')
     .select('id, execution_action_id, current_stage_index, last_occurrence_at')
@@ -305,8 +359,8 @@ export async function runDeescalationForPlayer(playerId: string, nowIso: string 
     if (updateError) throw updateError;
 
     outcomes.push({
-      track_id: track.id,
-      execution_action_id: track.execution_action_id,
+      track_id: asEscalationTrackId(track.id),
+      execution_action_id: asExecutionActionId(track.execution_action_id),
       old_stage: track.current_stage_index,
       new_stage: newStage,
     });

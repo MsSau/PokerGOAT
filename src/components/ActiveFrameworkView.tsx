@@ -3,9 +3,10 @@ import { UserRole, PerformanceFramework, FrameworkVersion } from '../types';
 import { getActiveFramework, resolveCoachId } from '../lib/supabase';
 import { Lock, ShieldCheck, Sparkles, Calendar, BookOpen, Layers, AlertTriangle } from 'lucide-react';
 import { useAsync } from '../lib/useAsync';
+import { PlayerId } from '../types/ids';
 
 interface ActiveFrameworkViewProps {
-  userId: string;
+  userId: PlayerId;
   role: UserRole;
 }
 

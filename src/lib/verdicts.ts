@@ -8,6 +8,10 @@
 
 import { supabase } from './supabase';
 import { Database } from '../types/database';
+import {
+  PlayerId, VerdictId, SessionId,
+  asVerdictId, asSessionId,
+} from '../types/ids';
 
 export type VerdictClassification = Database['public']['Enums']['verdict_classification'];
 
@@ -18,8 +22,8 @@ export type VerdictEvidenceSection = 'WHAT_WENT_WELL' | 'WHERE_FAILED' | 'PATTER
 export type EvidenceConfidence = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export interface LatestVerdict {
-  id: string;
-  sessionId: string;
+  id: VerdictId;
+  sessionId: SessionId;
   classification: VerdictClassification;
   headline: string;
   createdAt: string | null;
@@ -81,7 +85,7 @@ export const CLASSIFICATION_TONE: Record<VerdictClassification, string> = {
   INSUFFICIENT_EVIDENCE: 'text-text-muted',
 };
 
-export async function fetchLatestVerdict(playerId: string): Promise<LatestVerdict | null> {
+export async function fetchLatestVerdict(playerId: PlayerId): Promise<LatestVerdict | null> {
   const { data: sessions, error: sErr } = await supabase
     .from('sessions')
     .select('id')
@@ -106,8 +110,8 @@ export async function fetchLatestVerdict(playerId: string): Promise<LatestVerdic
   if (!data) return null;
 
   return {
-    id: data.id,
-    sessionId: data.session_id,
+    id: asVerdictId(data.id),
+    sessionId: asSessionId(data.session_id),
     classification: data.classification,
     headline: data.headline,
     createdAt: data.created_at,
@@ -115,7 +119,7 @@ export async function fetchLatestVerdict(playerId: string): Promise<LatestVerdic
 }
 
 /** Every current Verdict for this player, newest first — the Verdicts tab's browsable timeline. */
-export async function fetchVerdictHistory(playerId: string, limit = 30): Promise<LatestVerdict[]> {
+export async function fetchVerdictHistory(playerId: PlayerId, limit = 30): Promise<LatestVerdict[]> {
   const { data: sessions, error: sErr } = await supabase
     .from('sessions')
     .select('id')
@@ -138,8 +142,8 @@ export async function fetchVerdictHistory(playerId: string, limit = 30): Promise
   if (error) throw error;
 
   return (data || []).map((row) => ({
-    id: row.id,
-    sessionId: row.session_id,
+    id: asVerdictId(row.id),
+    sessionId: asSessionId(row.session_id),
     classification: row.classification,
     headline: row.headline,
     createdAt: row.created_at,
@@ -152,7 +156,7 @@ export async function fetchVerdictHistory(playerId: string, limit = 30): Promise
  * sections will simply have empty arrays for the sections that weren't
  * written at the time — Verdicts are immutable, so this is never backfilled.
  */
-export async function fetchVerdictDetail(verdictId: string): Promise<VerdictDetail | null> {
+export async function fetchVerdictDetail(verdictId: VerdictId): Promise<VerdictDetail | null> {
   const { data: verdict, error: vErr } = await supabase
     .from('verdicts')
     .select('id, session_id, classification, headline, created_at, reflection_prose')
@@ -190,8 +194,8 @@ export async function fetchVerdictDetail(verdictId: string): Promise<VerdictDeta
   }
 
   return {
-    id: verdict.id,
-    sessionId: verdict.session_id,
+    id: asVerdictId(verdict.id),
+    sessionId: asSessionId(verdict.session_id),
     classification: verdict.classification,
     headline: verdict.headline,
     createdAt: verdict.created_at,
@@ -221,7 +225,7 @@ export interface MistakeOccurrence {
  * of fetchVerdictDetail — most Verdict views never need this list, so it
  * stays a separate, on-demand query.
  */
-export async function fetchSessionMistakes(sessionId: string): Promise<MistakeOccurrence[]> {
+export async function fetchSessionMistakes(sessionId: SessionId): Promise<MistakeOccurrence[]> {
   const { data, error } = await supabase
     .from('execution_action_occurrences')
     .select('id, occurred_at, execution_actions(name, base_severity), tournaments(name)')

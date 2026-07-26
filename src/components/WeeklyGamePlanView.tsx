@@ -20,9 +20,10 @@ import {
 import { WeeklyGamePlanTournament } from '../types';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage, formatDayMonth } from '../lib/utils';
+import { PlayerId, asPokerWeekId, asFrameworkVersionId, asBRMAssignmentId, asWeeklyGamePlanId } from '../types/ids';
 
 interface Props {
-  userId: string;
+  userId: PlayerId;
 }
 
 // `session` (1 or 2) is a client-only bucketing concept for the dual-session
@@ -33,6 +34,7 @@ interface TournamentRow {
   slot_number: number;
   tournament_name: string;
   intended_buy_ins: number;
+  buy_in_amount: number;
   planned_date: string;
   session: 1 | 2;
 }
@@ -40,16 +42,18 @@ interface ConditionalRow {
   tournament_name: string;
   activation_condition: string;
   permitted_buy_ins: number;
+  buy_in_amount: number;
 }
 
 const emptyTournament = (slot: number, planned_date: string, session: 1 | 2): TournamentRow => ({
   slot_number: slot,
   tournament_name: '',
   intended_buy_ins: 1,
+  buy_in_amount: 0,
   planned_date,
   session,
 });
-const emptyConditional = (): ConditionalRow => ({ tournament_name: '', activation_condition: '', permitted_buy_ins: 1 });
+const emptyConditional = (): ConditionalRow => ({ tournament_name: '', activation_condition: '', permitted_buy_ins: 1, buy_in_amount: 0 });
 
 function nextSlotNumber(tournaments: TournamentRow[]): number {
   return tournaments.reduce((max, t) => Math.max(max, t.slot_number), 0) + 1;
@@ -76,6 +80,7 @@ function hydrateTournaments(rows: WeeklyGamePlanTournament[], fallbackDate: stri
           slot_number: r.slot_number,
           tournament_name: r.tournament_name,
           intended_buy_ins: r.intended_buy_ins,
+          buy_in_amount: r.buy_in_amount ?? 0,
           planned_date: date,
           session: i % 2 === 0 ? 1 : 2,
         });
@@ -133,7 +138,7 @@ export default function WeeklyGamePlanView({ userId }: Props) {
     const fallbackDate = context.pokerWeek ? getWeekDates(context.pokerWeek.start_timestamp)[0] : '';
 
     if (context.pokerWeek) {
-      const full = await fetchExistingWGP(userId, context.pokerWeek.id);
+      const full = await fetchExistingWGP(userId, asPokerWeekId(context.pokerWeek.id));
       setExisting(full);
       if (full) {
         setWeeklyIntention(full.plan.weekly_intention || '');
@@ -144,6 +149,7 @@ export default function WeeklyGamePlanView({ userId }: Props) {
             tournament_name: c.tournament_name,
             activation_condition: c.activation_condition,
             permitted_buy_ins: c.permitted_buy_ins,
+            buy_in_amount: c.buy_in_amount ?? 0,
           })),
         );
         setCommitments(full.commitments.length ? full.commitments.map((c) => c.commitment_text) : ['']);
@@ -206,27 +212,34 @@ export default function WeeklyGamePlanView({ userId }: Props) {
       if (!plan) {
         plan = await createDraftWGP(
           userId,
-          ctx.pokerWeek.id,
-          ctx.frameworkVersion?.id || null,
-          ctx.brmAssignment?.id || null,
+          asPokerWeekId(ctx.pokerWeek.id),
+          ctx.frameworkVersion?.id ? asFrameworkVersionId(ctx.frameworkVersion.id) : null,
+          ctx.brmAssignment?.id ? asBRMAssignmentId(ctx.brmAssignment.id) : null,
         );
       }
+      const planId = asWeeklyGamePlanId(plan.id);
       const named = tournaments.filter((t) => t.tournament_name);
-      await updateWGPIntentionFocus(plan.id, weeklyIntention, weeklyFocus);
-      await replacePlayingDays(plan.id, deriveDays(named));
+      await updateWGPIntentionFocus(planId, weeklyIntention, weeklyFocus);
+      await replacePlayingDays(planId, deriveDays(named));
       await replaceTournaments(
-        plan.id,
+        planId,
         named.map((t) => ({
           slot_number: t.slot_number,
           tournament_name: t.tournament_name,
           permitted_buy_ins: t.intended_buy_ins,
           intended_buy_ins: t.intended_buy_ins,
           planned_date: t.planned_date || null,
+          buy_in_amount: t.buy_in_amount > 0 ? t.buy_in_amount : null,
         })),
       );
-      await replaceConditionalTournaments(plan.id, conditionals.filter((c) => c.tournament_name));
+      await replaceConditionalTournaments(
+        planId,
+        conditionals
+          .filter((c) => c.tournament_name)
+          .map((c) => ({ ...c, buy_in_amount: c.buy_in_amount > 0 ? c.buy_in_amount : null })),
+      );
       await replaceCommitments(
-        plan.id,
+        planId,
         commitments.filter((c) => c.trim()).map((c) => ({ commitment_text: c })),
       );
       await load();
@@ -245,12 +258,12 @@ export default function WeeklyGamePlanView({ userId }: Props) {
     setError(null);
     try {
       await handleSaveDraft();
-      const planId = existing?.plan.id;
+      const planId = existing?.plan.id ? asWeeklyGamePlanId(existing.plan.id) : null;
       if (!planId) {
         // handleSaveDraft() reloaded `existing` via load() only after this
         // function returns in the next render — fetch fresh instead.
-        const full = await fetchExistingWGP(userId, ctx.pokerWeek.id);
-        if (full) await lockWeeklyGamePlan(full.plan.id);
+        const full = await fetchExistingWGP(userId, asPokerWeekId(ctx.pokerWeek.id));
+        if (full) await lockWeeklyGamePlan(asWeeklyGamePlanId(full.plan.id));
       } else {
         await lockWeeklyGamePlan(planId);
       }
@@ -366,7 +379,11 @@ export default function WeeklyGamePlanView({ userId }: Props) {
 
               <ReadOnlyList
                 title="Activation Conditions"
-                items={conditionals.map((c) => `${c.tournament_name} (if: ${c.activation_condition}) — ${c.permitted_buy_ins} buy-in(s)`)}
+                items={conditionals.map(
+                  (c) =>
+                    `${c.tournament_name} (if: ${c.activation_condition}) — ${c.permitted_buy_ins} buy-in(s)` +
+                    (c.buy_in_amount ? ` @ ₹${c.buy_in_amount}` : '')
+                )}
               />
               <ReadOnlyList title="Commitments" items={commitments.filter((c) => c.trim())} />
             </div>
@@ -456,7 +473,21 @@ export default function WeeklyGamePlanView({ userId }: Props) {
                       next[i] = { ...next[i], permitted_buy_ins: Number(e.target.value) };
                       setConditionals(next);
                     }}
+                    title="Permitted buy-ins"
                     className="bg-ink border border-border rounded p-2 text-12 text-text-primary w-20"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="Amount (₹)"
+                    value={row.buy_in_amount || ''}
+                    onChange={(e) => {
+                      const next = [...conditionals];
+                      next[i] = { ...next[i], buy_in_amount: Number(e.target.value) };
+                      setConditionals(next);
+                    }}
+                    title="Buy-in amount (₹)"
+                    className="bg-ink border border-border rounded p-2 text-12 text-text-primary w-24"
                   />
                 </div>
               )}
@@ -647,14 +678,15 @@ function SessionTable({
             <tr className="bg-surface-raised/60 text-text-muted text-11 font-mono uppercase">
               <th className="text-left px-2 py-1.5 w-14">Table</th>
               <th className="text-left px-2 py-1.5">Identifier</th>
-              <th className="text-right px-2 py-1.5 w-20">Buy-in</th>
+              <th className="text-right px-2 py-1.5 w-16">Buy-ins</th>
+              <th className="text-right px-2 py-1.5 w-24">Amount (₹)</th>
               {!readOnly && <th className="w-8" />}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={readOnly ? 3 : 4} className="px-2 py-3 text-center text-text-faint text-12">
+                <td colSpan={readOnly ? 4 : 5} className="px-2 py-3 text-center text-text-faint text-12">
                   {readOnly ? 'None planned.' : 'No tournaments yet.'}
                 </td>
               </tr>
@@ -696,6 +728,20 @@ function SessionTable({
                       value={row.intended_buy_ins}
                       onChange={(e) => onChange?.(index, { intended_buy_ins: Number(e.target.value) })}
                       className="bg-ink border border-border rounded p-1 text-12 text-text-primary w-16 text-right"
+                    />
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  {readOnly ? (
+                    row.buy_in_amount ? `₹${row.buy_in_amount}` : '—'
+                  ) : (
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="0"
+                      value={row.buy_in_amount || ''}
+                      onChange={(e) => onChange?.(index, { buy_in_amount: Number(e.target.value) })}
+                      className="bg-ink border border-border rounded p-1 text-12 text-text-primary w-20 text-right"
                     />
                   )}
                 </td>

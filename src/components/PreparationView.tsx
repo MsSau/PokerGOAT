@@ -5,11 +5,12 @@ import PreGameRitual, { RitualFreeText } from './PreGameRitual';
 import { createPreparationRecord, PreparationRecordRow } from '../lib/preparation';
 import { resolveCoachId } from '../lib/supabase';
 import { getErrorMessage, medalColorClass } from '../lib/utils';
+import { PlayerId } from '../types/ids';
 
 type Stage = 'checkin' | 'ritual' | 'medal';
 
 interface PreparationViewProps {
-  userId: string;
+  userId: PlayerId;
   defaultStopLoss: number;
   onGoToTournamentSelection: () => void;
 }

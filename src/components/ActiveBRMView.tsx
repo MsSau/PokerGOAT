@@ -4,9 +4,10 @@ import { getActiveBRM, resolveCoachId } from '../lib/supabase';
 import { Lock, ShieldCheck, DollarSign, ListCollapse, Award, TableProperties, AlertTriangle } from 'lucide-react';
 import { formatCurrency } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
+import { PlayerId } from '../types/ids';
 
 interface ActiveBRMViewProps {
-  userId: string;
+  userId: PlayerId;
   role: UserRole;
 }
 

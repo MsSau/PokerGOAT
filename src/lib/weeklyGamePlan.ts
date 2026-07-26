@@ -22,6 +22,10 @@ import {
   BRMLevel,
   FrameworkVersion,
 } from '../types';
+import {
+  PlayerId, CoachId, PokerWeekId, WeeklyGamePlanId, FrameworkVersionId, BRMAssignmentId,
+  asBRMLevelId,
+} from '../types/ids';
 
 export interface WGPContext {
   pokerWeek: PokerWeek | null;
@@ -57,7 +61,7 @@ export interface ValidationIssue {
  * creation rather than fabricate one client-side — mirroring the
  * "Coach Configuration Required" gate the PRD specifies for BRM band gaps.
  */
-export async function resolveWGPContext(userId: string, coachId: string): Promise<WGPContext> {
+export async function resolveWGPContext(userId: PlayerId, coachId: CoachId): Promise<WGPContext> {
   const nowIso = new Date().toISOString();
 
   const { data: pokerWeek, error: pwError } = await supabase
@@ -114,12 +118,12 @@ export async function resolveWGPContext(userId: string, coachId: string): Promis
     frameworkVersion = ver;
   }
 
-  const slotRules = brmLevel ? await fetchSlotRulesForBRMLevel(brmLevel.id) : null;
+  const slotRules = brmLevel ? await fetchSlotRulesForBRMLevel(asBRMLevelId(brmLevel.id)) : null;
 
   return { pokerWeek, brmAssignment, brmLevel, frameworkVersion, slotRules };
 }
 
-export async function fetchExistingWGP(userId: string, pokerWeekId: string): Promise<WGPFull | null> {
+export async function fetchExistingWGP(userId: PlayerId, pokerWeekId: PokerWeekId): Promise<WGPFull | null> {
   const { data: plan, error } = await supabase
     .from('weekly_game_plans')
     .select('*')
@@ -154,10 +158,10 @@ export async function fetchExistingWGP(userId: string, pokerWeekId: string): Pro
 }
 
 export async function createDraftWGP(
-  userId: string,
-  pokerWeekId: string,
-  frameworkVersionId: string | null,
-  brmAssignmentId: string | null,
+  userId: PlayerId,
+  pokerWeekId: PokerWeekId,
+  frameworkVersionId: FrameworkVersionId | null,
+  brmAssignmentId: BRMAssignmentId | null,
 ): Promise<WeeklyGamePlan> {
   const { data, error } = await supabase
     .from('weekly_game_plans')
@@ -174,7 +178,28 @@ export async function createDraftWGP(
   return data;
 }
 
-export async function updateWGPIntentionFocus(planId: string, weeklyIntention: string, weeklyFocus: string) {
+// Guards every DRAFT-only write below. The fn_check_session_finalized-style
+// immutability that Postgres enforces elsewhere (sessions/tournaments,
+// activated Framework/BRM/Taxonomy/etc. versions) isn't present on
+// weekly_game_plans or its child tables — and the RLS policy ("Players
+// manage own weekly game plans") only checks player_id, never status — so
+// without this, a LOCKED plan's content (and lockWeeklyGamePlan itself)
+// stays writable via anything that bypasses the UI's isLocked read-only
+// branch (a stale tab, a second concurrent call, direct API access).
+async function assertPlanIsDraft(planId: WeeklyGamePlanId): Promise<void> {
+  const { data, error } = await supabase
+    .from('weekly_game_plans')
+    .select('status')
+    .eq('id', planId)
+    .single();
+  if (error) throw error;
+  if (data.status !== 'DRAFT') {
+    throw new Error('This Weekly Game Plan is locked and can no longer be edited directly — use an amendment instead.');
+  }
+}
+
+export async function updateWGPIntentionFocus(planId: WeeklyGamePlanId, weeklyIntention: string, weeklyFocus: string) {
+  await assertPlanIsDraft(planId);
   const { error } = await supabase
     .from('weekly_game_plans')
     .update({ weekly_intention: weeklyIntention, weekly_focus: weeklyFocus })
@@ -182,15 +207,15 @@ export async function updateWGPIntentionFocus(planId: string, weeklyIntention: s
   if (error) throw error;
 }
 
-// Draft-only editing uses delete+reinsert per child table for simplicity.
-// (Never called once status = 'Locked' — the fn_check_session_finalized-style
-// immutability that Postgres enforces elsewhere isn't present on these
-// tables in the provided schema, so the UI itself is what enforces the lock.)
+// Draft-only editing uses delete+reinsert per child table for simplicity —
+// each function below asserts DRAFT status itself (see assertPlanIsDraft)
+// rather than relying solely on the UI's isLocked read-only branch.
 
 export async function replacePlayingDays(
-  planId: string,
+  planId: WeeklyGamePlanId,
   rows: { planned_date: string; planned_session_allocation: number }[],
 ) {
+  await assertPlanIsDraft(planId);
   const { error: delErr } = await supabase.from('weekly_game_plan_playing_days').delete().eq('weekly_game_plan_id', planId);
   if (delErr) throw delErr;
   if (rows.length === 0) return;
@@ -201,15 +226,17 @@ export async function replacePlayingDays(
 }
 
 export async function replaceTournaments(
-  planId: string,
+  planId: WeeklyGamePlanId,
   rows: {
     slot_number: number;
     tournament_name: string;
     permitted_buy_ins: number;
     intended_buy_ins: number;
     planned_date: string | null;
+    buy_in_amount: number | null;
   }[],
 ) {
+  await assertPlanIsDraft(planId);
   const { error: delErr } = await supabase.from('weekly_game_plan_tournaments').delete().eq('weekly_game_plan_id', planId);
   if (delErr) throw delErr;
   if (rows.length === 0) return;
@@ -220,9 +247,10 @@ export async function replaceTournaments(
 }
 
 export async function replaceConditionalTournaments(
-  planId: string,
-  rows: { tournament_name: string; activation_condition: string; permitted_buy_ins: number }[],
+  planId: WeeklyGamePlanId,
+  rows: { tournament_name: string; activation_condition: string; permitted_buy_ins: number; buy_in_amount: number | null }[],
 ) {
+  await assertPlanIsDraft(planId);
   const { error: delErr } = await supabase
     .from('weekly_game_plan_conditional_tournaments')
     .delete()
@@ -235,7 +263,8 @@ export async function replaceConditionalTournaments(
   if (error) throw error;
 }
 
-export async function replaceCommitments(planId: string, rows: { commitment_text: string }[]) {
+export async function replaceCommitments(planId: WeeklyGamePlanId, rows: { commitment_text: string }[]) {
+  await assertPlanIsDraft(planId);
   const { error: delErr } = await supabase.from('weekly_game_plan_commitments').delete().eq('weekly_game_plan_id', planId);
   if (delErr) throw delErr;
   if (rows.length === 0) return;
@@ -328,20 +357,30 @@ export function validateWeeklyGamePlan(
   return issues;
 }
 
-export async function lockWeeklyGamePlan(planId: string) {
+export async function lockWeeklyGamePlan(planId: WeeklyGamePlanId) {
+  // .eq('status', 'DRAFT') makes this atomic at the row level — closes the
+  // TOCTOU gap a separate check-then-write would leave between two
+  // concurrent lock calls (see assertPlanIsDraft above for why a check is
+  // needed here at all: this table has no DB-level immutability trigger).
   const { data, error } = await supabase
     .from('weekly_game_plans')
     .update({ status: 'LOCKED', locked_at: new Date().toISOString() })
     .eq('id', planId)
+    .eq('status', 'DRAFT')
     .select('*')
     .single();
-  if (error) throw error;
+  if (error) {
+    if (error.code === 'PGRST116') {
+      throw new Error('This Weekly Game Plan is already locked.');
+    }
+    throw error;
+  }
   return data;
 }
 
 export async function appendAmendment(
-  planId: string,
-  playerId: string,
+  planId: WeeklyGamePlanId,
+  playerId: PlayerId,
   amendmentType: string,
   originalReference: Json,
   proposedNewValue: Json,

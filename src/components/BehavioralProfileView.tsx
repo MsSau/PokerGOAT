@@ -11,9 +11,10 @@ import {
 } from '../lib/behavioralProfile';
 import { Dimension, DIMENSION_LABELS } from '../lib/behavioralProfileEngine';
 import { useAsync } from '../lib/useAsync';
+import { PlayerId } from '../types/ids';
 
 interface BehavioralProfileViewProps {
-  userId: string;
+  userId: PlayerId;
   showRadar?: boolean;
   allowWindowControl?: boolean;
 }

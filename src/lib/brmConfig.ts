@@ -19,6 +19,7 @@
 import { supabase } from './supabase';
 import { BRMConfiguration, BRMConfigVersion } from '../types';
 import { DEFAULT_SLOT_RULES, SlotRule } from './brmRules';
+import { CoachId, BRMConfigId, BRMConfigVersionId, asBRMConfigVersionId } from '../types/ids';
 
 export interface BRMLevelRow {
   level_index: number;
@@ -52,14 +53,14 @@ export const DEFAULT_BRM_ROWS: BRMLevelRow[] = [
   { level_index: 8, min_bankroll: 1800000, max_bankroll: 2000000, session_stop_loss: 75000, day_stop_loss: 150000, week_stop_loss: 300000, max_tournament_buy_in: null, max_session_exposure: null, slot_rules: [] },
 ];
 
-export async function fetchBRMConfigForCoach(coachId: string): Promise<BRMConfiguration | null> {
+export async function fetchBRMConfigForCoach(coachId: CoachId): Promise<BRMConfiguration | null> {
   const { data, error } = await supabase.from('brm_configurations').select('*').eq('coach_id', coachId).maybeSingle();
   if (error) throw error;
   return data;
 }
 
 /** Full version history for this config, newest first — the Version History tab. */
-export async function fetchBRMVersions(configId: string): Promise<BRMConfigVersion[]> {
+export async function fetchBRMVersions(configId: BRMConfigId): Promise<BRMConfigVersion[]> {
   const { data, error } = await supabase
     .from('brm_config_versions')
     .select('*')
@@ -74,7 +75,7 @@ export function currentBRMVersion(versions: BRMConfigVersion[]): BRMConfigVersio
 }
 
 /** Bands + levels + slot rules for one version, merged by level_index into one spreadsheet-ready row per level. */
-export async function fetchRowsForVersion(versionId: string): Promise<BRMLevelRow[]> {
+export async function fetchRowsForVersion(versionId: BRMConfigVersionId): Promise<BRMLevelRow[]> {
   const [bandsRes, levelsRes] = await Promise.all([
     supabase.from('brm_bankroll_bands').select('*').eq('version_id', versionId).order('level_index', { ascending: true }),
     supabase.from('brm_levels').select('*').eq('version_id', versionId).order('level_index', { ascending: true }),
@@ -116,7 +117,7 @@ export async function fetchRowsForVersion(versionId: string): Promise<BRMLevelRo
   });
 }
 
-async function insertRowsForVersion(versionId: string, rows: BRMLevelRow[]): Promise<void> {
+async function insertRowsForVersion(versionId: BRMConfigVersionId, rows: BRMLevelRow[]): Promise<void> {
   const { error: bandsError } = await supabase.from('brm_bankroll_bands').insert(
     rows.map((r) => ({
       version_id: versionId,
@@ -159,7 +160,7 @@ async function insertRowsForVersion(versionId: string, rows: BRMLevelRow[]): Pro
 }
 
 /** First-time setup: creates the coach's singleton BRM config with its first (already-active) version. */
-export async function createBRMConfig(coachId: string, rows: BRMLevelRow[]): Promise<{ config: BRMConfiguration; version: BRMConfigVersion }> {
+export async function createBRMConfig(coachId: CoachId, rows: BRMLevelRow[]): Promise<{ config: BRMConfiguration; version: BRMConfigVersion }> {
   const { data: config, error: configError } = await supabase.from('brm_configurations').insert({ coach_id: coachId }).select('*').single();
   if (configError) throw configError;
 
@@ -170,7 +171,7 @@ export async function createBRMConfig(coachId: string, rows: BRMLevelRow[]): Pro
     .single();
   if (versionError) throw versionError;
 
-  await insertRowsForVersion(version.id, rows);
+  await insertRowsForVersion(asBRMConfigVersionId(version.id), rows);
 
   return { config, version };
 }
@@ -182,7 +183,7 @@ export async function createBRMConfig(coachId: string, rows: BRMLevelRow[]): Pro
  * and flips the previous version off.
  */
 export async function reviseBRMConfig(
-  configId: string,
+  configId: BRMConfigId,
   currentVersion: BRMConfigVersion,
   rows: BRMLevelRow[],
   reason: string,
@@ -213,7 +214,7 @@ export async function reviseBRMConfig(
     .single();
   if (versionError) throw versionError;
 
-  await insertRowsForVersion(newVersion.id, rows);
+  await insertRowsForVersion(asBRMConfigVersionId(newVersion.id), rows);
 
   // .select() + a length check — an UPDATE matching zero rows succeeds
   // silently in PostgREST (e.g. an RLS gap), which is exactly how

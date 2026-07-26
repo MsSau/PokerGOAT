@@ -5,6 +5,7 @@
 import { supabase } from './supabase';
 import { Database } from '../types/database';
 import { computePreparationMedal, countSupportingComponents, PhysicalReadiness } from './preparationEngine';
+import { PlayerId, CoachId } from '../types/ids';
 
 export type PreparationRecordRow = Database['public']['Tables']['preparation_records']['Row'];
 
@@ -15,7 +16,7 @@ export type PreparationRecordRow = Database['public']['Tables']['preparation_rec
 // we correctly block Preparation Check-in submission rather than fabricate
 // a rule_version_id client-side (preparation_records.rule_version_id is a
 // NOT NULL FK).
-async function fetchActivePreparationRuleVersionId(coachId: string): Promise<string | null> {
+async function fetchActivePreparationRuleVersionId(coachId: CoachId): Promise<string | null> {
   const { data: ruleSet } = await supabase
     .from('preparation_rule_sets')
     .select('id')
@@ -55,8 +56,8 @@ export interface PreparationCheckInInput {
 // separately from the Medal" (§7) means never overwrite/discard the raw
 // inputs, not that they live in a different table.
 export async function createPreparationRecord(
-  playerId: string,
-  coachId: string,
+  playerId: PlayerId,
+  coachId: CoachId,
   input: PreparationCheckInInput,
 ): Promise<PreparationRecordRow> {
   const ruleVersionId = await fetchActivePreparationRuleVersionId(coachId);
@@ -102,7 +103,7 @@ export async function createPreparationRecord(
   return data;
 }
 
-export async function fetchLatestPreparationRecord(playerId: string): Promise<PreparationRecordRow | null> {
+export async function fetchLatestPreparationRecord(playerId: PlayerId): Promise<PreparationRecordRow | null> {
   const { data, error } = await supabase
     .from('preparation_records')
     .select('*')
@@ -118,7 +119,7 @@ export async function fetchLatestPreparationRecord(playerId: string): Promise<Pr
 // enforces this server-side via a unique index on sessions.preparation_id).
 // This is what Start Session gates on: the player's latest check-in, but only
 // if it hasn't already been consumed by an earlier session today.
-export async function fetchAvailablePreparationRecord(playerId: string): Promise<PreparationRecordRow | null> {
+export async function fetchAvailablePreparationRecord(playerId: PlayerId): Promise<PreparationRecordRow | null> {
   const latest = await fetchLatestPreparationRecord(playerId);
   if (!latest) return null;
 

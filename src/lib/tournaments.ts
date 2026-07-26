@@ -1,5 +1,9 @@
 import { supabase } from './supabase';
 import { Database } from '../types/database';
+import {
+  SessionId, TournamentId, TournamentEntryId, ExecutionActionId, BRMAssignmentId,
+  asTournamentId, asTournamentEntryId, asExecutionActionId,
+} from '../types/ids';
 
 // ============================================================================
 // TYPES
@@ -13,7 +17,7 @@ export type TournamentRow = Database['public']['Tables']['tournaments']['Row'] &
 
 export interface ComplianceFlags {
   isUnauthorized: boolean;      // not in the locked Session Contract
-  isUnplanned: boolean;         // not in the locked Weekly Game Plan (MVP: mirrors isUnauthorized — see note at bottom)
+  isUnplanned: boolean;         // not in the locked Weekly Game Plan (checked independently of the Session Contract match)
   exceededBuyIns: boolean;      // entry_sequence exceeds the contracted/BRM-permitted max for this slot (PRD §10: "Exceeded permitted buy-ins per tournament")
   exceededMaxBuyIn: boolean;    // this entry's buy-in amount exceeds the BRM-permitted per-tournament maximum (PRD §10: "Exceeded permitted tournament buy-ins")
   loggedAfterStopLoss: boolean; // Session/Day/Week capacity already consumed
@@ -25,7 +29,7 @@ export interface ComplianceFlags {
 // occurrences to the currently-activated CANONICAL_ACTIVE action.
 // ============================================================================
 
-const actionCache = new Map<string, { id: string; is_hard_gate: boolean } | null>();
+const actionCache = new Map<string, { id: ExecutionActionId; is_hard_gate: boolean } | null>();
 
 export async function getCanonicalExecutionAction(name: string) {
   if (actionCache.has(name)) return actionCache.get(name)!;
@@ -44,16 +48,16 @@ export async function getCanonicalExecutionAction(name: string) {
     return null;
   }
 
-  const result = data ? { id: data.id, is_hard_gate: !!data.is_hard_gate } : null;
+  const result = data ? { id: asExecutionActionId(data.id), is_hard_gate: !!data.is_hard_gate } : null;
   actionCache.set(name, result);
   return result;
 }
 
 async function recordExecutionOccurrence(params: {
   actionName: string;
-  sessionId: string;
-  tournamentId?: string | null;
-  tournamentEntryId?: string | null;
+  sessionId: SessionId;
+  tournamentId?: TournamentId | null;
+  tournamentEntryId?: TournamentEntryId | null;
 }) {
   const action = await getCanonicalExecutionAction(params.actionName);
   if (!action) {
@@ -85,9 +89,9 @@ async function recordExecutionOccurrence(params: {
 }
 
 async function flagOccurrences(
-  sessionId: string,
-  tournamentId: string,
-  entryId: string,
+  sessionId: SessionId,
+  tournamentId: TournamentId,
+  entryId: TournamentEntryId,
   flags: ComplianceFlags
 ) {
   const jobs: ReturnType<typeof recordExecutionOccurrence>[] = [];
@@ -110,7 +114,7 @@ async function flagOccurrences(
 // SESSION / CONTRACT CONTEXT
 // ============================================================================
 
-async function fetchActiveSessionContext(sessionId: string) {
+async function fetchActiveSessionContext(sessionId: SessionId) {
   const { data: session, error: sErr } = await supabase
     .from('sessions')
     .select('id, player_id, contract_id, status')
@@ -128,15 +132,39 @@ async function fetchActiveSessionContext(sessionId: string) {
     .select(`
       id, session_stop_loss, effective_session_loss_limit_at_creation,
       remaining_day_capacity_snapshot, remaining_week_capacity_snapshot, brm_assignment_id,
-      session_contract_tournaments ( id, tournament_name, slot_number, permitted_buy_ins )
+      weekly_game_plan_id,
+      session_contract_tournaments ( id, tournament_name, slot_number, permitted_buy_ins ),
+      session_contract_conditional_tournaments ( id, tournament_name, permitted_buy_ins ),
+      session_contract_substitutions ( id, original_slot_id, replacement_tournament_name, replacement_permitted_buy_ins )
     `)
     .eq('id', session.contract_id)
     .single();
   if (cErr) throw cErr;
 
-  const maxTournamentBuyIn = await fetchMaxTournamentBuyIn(contract.brm_assignment_id);
+  const maxTournamentBuyIn = await fetchMaxTournamentBuyIn(contract.brm_assignment_id as BRMAssignmentId);
+  const wgpTournamentNames = await fetchWGPTournamentNames(contract.weekly_game_plan_id);
 
-  return { session, contract, maxTournamentBuyIn };
+  return { session, contract, maxTournamentBuyIn, wgpTournamentNames };
+}
+
+// isUnplanned checks against the locked Weekly Game Plan (PRD §10) — a
+// separate, higher-level source of truth from the Session Contract's own
+// slots/conditionals (isUnauthorized). A tournament can be missing from one
+// without being missing from the other, e.g. a substitution that's in this
+// week's contract but was never in the WGP, so the two flags must be
+// computed independently rather than one mirroring the other.
+async function fetchWGPTournamentNames(weeklyGamePlanId: string | null): Promise<Set<string>> {
+  if (!weeklyGamePlanId) return new Set();
+
+  const [tournaments, conditionals] = await Promise.all([
+    supabase.from('weekly_game_plan_tournaments').select('tournament_name').eq('weekly_game_plan_id', weeklyGamePlanId),
+    supabase.from('weekly_game_plan_conditional_tournaments').select('tournament_name').eq('weekly_game_plan_id', weeklyGamePlanId),
+  ]);
+  if (tournaments.error) throw tournaments.error;
+  if (conditionals.error) throw conditionals.error;
+
+  const names = [...(tournaments.data || []), ...(conditionals.data || [])].map((t) => t.tournament_name.trim().toLowerCase());
+  return new Set(names);
 }
 
 // The per-tournament monetary buy-in cap (PRD §4's "Max Buy-in/Tournament")
@@ -145,7 +173,7 @@ async function fetchActiveSessionContext(sessionId: string) {
 // (a *count*), there is no per-slot override for this, it's a flat BRM-level
 // ceiling. Null means the coach hasn't configured registration rules for
 // this level (e.g. Levels 6-8) — nothing to enforce in that case.
-async function fetchMaxTournamentBuyIn(brmAssignmentId: string): Promise<number | null> {
+async function fetchMaxTournamentBuyIn(brmAssignmentId: BRMAssignmentId): Promise<number | null> {
   const { data, error } = await supabase
     .from('weekly_brm_assignments')
     .select('brm_levels(max_tournament_buy_in)')
@@ -158,7 +186,7 @@ async function fetchMaxTournamentBuyIn(brmAssignmentId: string): Promise<number 
 
 // Session Loss Contribution = MAX(0, -Final Session Net P&L), computed only
 // from tournaments that are finalized (net_return IS NOT NULL) — PRD §6.
-async function computeSessionRealizedLossContribution(sessionId: string): Promise<number> {
+async function computeSessionRealizedLossContribution(sessionId: SessionId): Promise<number> {
   const { data, error } = await supabase
     .from('tournaments')
     .select('net_return')
@@ -177,7 +205,7 @@ async function computeSessionRealizedLossContribution(sessionId: string): Promis
 // flag" signal for the logging screen itself.
 type ActiveSessionContext = Awaited<ReturnType<typeof fetchActiveSessionContext>>;
 
-async function computeRemainingCapacity(sessionId: string, contract: ActiveSessionContext['contract']): Promise<number> {
+async function computeRemainingCapacity(sessionId: SessionId, contract: ActiveSessionContext['contract']): Promise<number> {
   const realizedLoss = await computeSessionRealizedLossContribution(sessionId);
   const effectiveLimit = Math.min(
     contract.effective_session_loss_limit_at_creation,
@@ -187,9 +215,45 @@ async function computeRemainingCapacity(sessionId: string, contract: ActiveSessi
   return effectiveLimit - realizedLoss;
 }
 
-function findMatchedSlot(contractTournaments: ActiveSessionContext['contract']['session_contract_tournaments'], tournamentName: string) {
-  return contractTournaments.find(
-    (t) => t.tournament_name.trim().toLowerCase() === tournamentName.trim().toLowerCase()
+// Matches against the contract's fixed slots, any conditional tournaments
+// already activated onto it (session_contract_conditional_tournaments —
+// populated either at Session Contract creation, via SessionContractView's
+// pre-selection checkboxes, or live during play via activateConditionalTournament),
+// and any recorded substitutions' replacement tournaments. PRD §5: the
+// Session Contract "must reference ... applicable conditional tournaments",
+// and §10 defines "Unauthorized tournament" as "not in the Session
+// Contract" — an activated conditional or a recorded substitution IS in the
+// Session Contract (an amendment to it, same as a conditional activation),
+// so both must be recognized here, not just the original fixed slots.
+// Whether a substitution's replacement itself passed its own BRM re-check
+// is tracked separately on the substitution record (passed_brm_validation)
+// — it doesn't affect whether the replacement counts as authorized here.
+//
+// A fixed slot that's since been substituted away is excluded from this
+// match — the substitution documents that the player is no longer playing
+// that slot's original tournament, so a brand-new buy-in under the
+// original name is no longer treated as authorized by construction (an
+// already-logged tournament under that name remains visible/playable in
+// TournamentLog, just gated behind its own explicit confirm step there).
+function findMatchedSlot(
+  contractTournaments: ActiveSessionContext['contract']['session_contract_tournaments'],
+  conditionalTournaments: ActiveSessionContext['contract']['session_contract_conditional_tournaments'],
+  substitutions: ActiveSessionContext['contract']['session_contract_substitutions'],
+  tournamentName: string
+): { permitted_buy_ins: number } | undefined {
+  const normalized = tournamentName.trim().toLowerCase();
+
+  const matchedSubstitution = substitutions.find(
+    (s) => s.replacement_tournament_name.trim().toLowerCase() === normalized
+  );
+  if (matchedSubstitution) {
+    return { permitted_buy_ins: matchedSubstitution.replacement_permitted_buy_ins };
+  }
+
+  const substitutedSlotIds = new Set(substitutions.map((s) => s.original_slot_id).filter((id): id is string => !!id));
+  return (
+    contractTournaments.find((t) => !substitutedSlotIds.has(t.id) && t.tournament_name.trim().toLowerCase() === normalized) ??
+    conditionalTournaments.find((t) => t.tournament_name.trim().toLowerCase() === normalized)
   );
 }
 
@@ -197,7 +261,7 @@ function findMatchedSlot(contractTournaments: ActiveSessionContext['contract']['
 // READ
 // ============================================================================
 
-export async function fetchSessionTournaments(sessionId: string): Promise<TournamentRow[]> {
+export async function fetchSessionTournaments(sessionId: SessionId): Promise<TournamentRow[]> {
   const { data, error } = await supabase
     .from('tournaments')
     .select('*, tournament_entries(*)')
@@ -216,20 +280,23 @@ export async function fetchSessionTournaments(sessionId: string): Promise<Tourna
 // ============================================================================
 
 export async function logNewTournamentEntry(params: {
-  sessionId: string;
+  sessionId: SessionId;
   tournamentName: string;
   tournamentNumber?: string;
   buyInAmount: number;
 }): Promise<{ tournament: TournamentRow; entry: TournamentEntryRow; flags: ComplianceFlags }> {
-  const { contract, maxTournamentBuyIn } = await fetchActiveSessionContext(params.sessionId);
+  const { contract, maxTournamentBuyIn, wgpTournamentNames } = await fetchActiveSessionContext(params.sessionId);
   const contractTournaments = contract.session_contract_tournaments || [];
-  const matchedSlot = findMatchedSlot(contractTournaments, params.tournamentName);
+  const conditionalTournaments = contract.session_contract_conditional_tournaments || [];
+  const substitutions = contract.session_contract_substitutions || [];
+  const matchedSlot = findMatchedSlot(contractTournaments, conditionalTournaments, substitutions, params.tournamentName);
+  const isPlanned = wgpTournamentNames.has(params.tournamentName.trim().toLowerCase());
 
   const remainingCapacity = await computeRemainingCapacity(params.sessionId, contract);
 
   const flags: ComplianceFlags = {
     isUnauthorized: !matchedSlot,
-    isUnplanned: !matchedSlot,
+    isUnplanned: !isPlanned,
     exceededBuyIns: !!matchedSlot && matchedSlot.permitted_buy_ins < 1,
     exceededMaxBuyIn: maxTournamentBuyIn !== null && params.buyInAmount > maxTournamentBuyIn,
     loggedAfterStopLoss: remainingCapacity <= 0,
@@ -265,7 +332,7 @@ export async function logNewTournamentEntry(params: {
     .single();
   if (eErr) throw eErr;
 
-  await flagOccurrences(params.sessionId, tournament.id, entry.id, flags);
+  await flagOccurrences(params.sessionId, asTournamentId(tournament.id), asTournamentEntryId(entry.id), flags);
 
   return { tournament, entry, flags };
 }
@@ -275,16 +342,18 @@ export async function logNewTournamentEntry(params: {
 // ============================================================================
 
 export async function logReEntry(params: {
-  sessionId: string;
-  tournamentId: string;
+  sessionId: SessionId;
+  tournamentId: TournamentId;
   buyInAmount: number;
 }): Promise<{ entry: TournamentEntryRow; flags: ComplianceFlags }> {
   const { contract, maxTournamentBuyIn } = await fetchActiveSessionContext(params.sessionId);
   const contractTournaments = contract.session_contract_tournaments || [];
+  const conditionalTournaments = contract.session_contract_conditional_tournaments || [];
+  const substitutions = contract.session_contract_substitutions || [];
 
   const { data: tournament, error: tErr } = await supabase
     .from('tournaments')
-    .select('id, name, is_unauthorized, net_return, tournament_entries(id, entry_sequence)')
+    .select('id, name, is_unauthorized, is_unplanned, net_return, tournament_entries(id, entry_sequence)')
     .eq('id', params.tournamentId)
     .single();
   if (tErr) throw tErr;
@@ -294,12 +363,15 @@ export async function logReEntry(params: {
   }
 
   const nextSeq = (tournament.tournament_entries?.length || 0) + 1;
-  const matchedSlot = findMatchedSlot(contractTournaments, tournament.name);
+  const matchedSlot = findMatchedSlot(contractTournaments, conditionalTournaments, substitutions, tournament.name);
   const remainingCapacity = await computeRemainingCapacity(params.sessionId, contract);
 
+  // isUnauthorized/isUnplanned are properties of the tournament as a whole
+  // (fixed at its first entry), not re-evaluated per re-entry — carry the
+  // values already persisted on the parent tournament row.
   const flags: ComplianceFlags = {
     isUnauthorized: !!tournament.is_unauthorized,
-    isUnplanned: !!tournament.is_unauthorized,
+    isUnplanned: !!tournament.is_unplanned,
     exceededBuyIns: matchedSlot ? nextSeq > matchedSlot.permitted_buy_ins : true,
     exceededMaxBuyIn: maxTournamentBuyIn !== null && params.buyInAmount > maxTournamentBuyIn,
     loggedAfterStopLoss: remainingCapacity <= 0,
@@ -320,7 +392,7 @@ export async function logReEntry(params: {
     .single();
   if (eErr) throw eErr;
 
-  await flagOccurrences(params.sessionId, params.tournamentId, entry.id, flags);
+  await flagOccurrences(params.sessionId, params.tournamentId, asTournamentEntryId(entry.id), flags);
 
   return { entry, flags };
 }
@@ -332,7 +404,7 @@ export async function logReEntry(params: {
 // ============================================================================
 
 export async function finalizeTournament(params: {
-  tournamentId: string;
+  tournamentId: TournamentId;
   winningsGross: number;
   bestRank?: number;
   worstRank?: number;

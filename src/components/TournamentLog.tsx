@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, RefreshCcw, Flag, CheckCircle2, AlertTriangle, X, Trophy } from 'lucide-react';
+import { Plus, RefreshCcw, Flag, CheckCircle2, AlertTriangle, X, Trophy, GitBranch, Repeat } from 'lucide-react';
 import {
   TournamentRow,
   ComplianceFlags,
@@ -8,15 +8,48 @@ import {
   logReEntry,
   finalizeTournament,
 } from '../lib/tournaments';
+import {
+  WGPConditionalTournament,
+  SessionContractTournamentRow,
+  SessionContractSubstitutionRow,
+  fetchConditionalTournamentsForSession,
+  fetchLockedContractTournaments,
+  fetchSubstitutions,
+  fetchBRMLevelIdForContract,
+  activateConditionalTournament,
+} from '../lib/sessionContract';
+import { SubstitutionPanel } from './SessionContractView';
 import { formatCurrency, getErrorMessage } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
+import { SessionId, SessionContractId, TournamentId, asTournamentId } from '../types/ids';
 
 interface TournamentLogProps {
-  sessionId: string;
+  sessionId: SessionId;
   onEndSession: () => void;
 }
 
-type FormMode = null | { type: 'new' } | { type: 'reentry'; tournamentId: string; tournamentName: string } | { type: 'finalize'; tournament: TournamentRow };
+type FormMode =
+  | null
+  | { type: 'new'; prefillName?: string; prefillAmount?: number | null }
+  | { type: 'reentry'; tournamentId: TournamentId; tournamentName: string; prefillAmount: number | null }
+  | { type: 'finalize'; tournament: TournamentRow }
+  | { type: 'conditional'; contractId: SessionContractId; conditional: WGPConditionalTournament };
+
+// Looks up the planned buy-in amount for a tournament name from whichever
+// list it came from — fixed slot or (activated) conditional — so the
+// +Buy-in form can prefill it instead of asking the player to retype an
+// amount that was already set when planning the week.
+function findPlannedBuyInAmount(
+  name: string,
+  fixedSlots: SessionContractTournamentRow[],
+  conditionals: WGPConditionalTournament[]
+): number | null {
+  const normalized = name.trim().toLowerCase();
+  const slot = fixedSlots.find((s) => s.tournament_name.trim().toLowerCase() === normalized);
+  if (slot?.buy_in_amount) return slot.buy_in_amount;
+  const conditional = conditionals.find((c) => c.tournament_name.trim().toLowerCase() === normalized);
+  return conditional?.buy_in_amount ?? null;
+}
 
 function FlagBadges({ t }: { t: TournamentRow }) {
   const badges: string[] = [];
@@ -49,13 +82,60 @@ function EntryFlagBadge({ status }: { status: string }) {
 export default function TournamentLog({ sessionId, onEndSession }: TournamentLogProps) {
   const { data, loading, error, reload: refresh } = useAsync(() => fetchSessionTournaments(sessionId), [sessionId]);
   const tournaments = data ?? [];
+  const { data: planContext, reload: refreshPlanContext } = useAsync(async () => {
+    const ctx = await fetchConditionalTournamentsForSession(sessionId);
+    if (!ctx) return null;
+    const [fixedSlots, substitutions, brmLevelId] = await Promise.all([
+      fetchLockedContractTournaments(ctx.contractId),
+      fetchSubstitutions(ctx.contractId),
+      fetchBRMLevelIdForContract(ctx.contractId),
+    ]);
+    return { contractId: ctx.contractId, conditionals: ctx.conditionals, fixedSlots, substitutions, brmLevelId };
+  }, [sessionId]);
   const [formMode, setFormMode] = useState<FormMode>(null);
   const [saving, setSaving] = useState(false);
   const [lastFlags, setLastFlags] = useState<ComplianceFlags | null>(null);
   const [endingSession, setEndingSession] = useState(false);
+  const [showSubForm, setShowSubForm] = useState(false);
+  const [confirmReentryFor, setConfirmReentryFor] = useState<TournamentRow | null>(null);
 
   const loggedEntryCount = tournaments.reduce((sum, t) => sum + (t.tournament_entries?.length ?? 0), 0);
   const canEndSession = loggedEntryCount > 0;
+
+  // Once a conditional is exercised, it becomes an ordinary logged
+  // tournament (with its own +Buy-in path) — stop offering it here so
+  // there's no ambiguity about which affordance to use for a repeat buy-in.
+  const exercisableConditionals = (planContext?.conditionals ?? []).filter(
+    (c) => !tournaments.some((t) => t.name.trim().toLowerCase() === c.tournament_name.trim().toLowerCase())
+  );
+
+  // Names of locked slots that have since been substituted away — greyed
+  // out below and gated behind a confirm step for further buy-ins, since
+  // the player already told the system (via the substitution) that they're
+  // no longer playing this one. Never a hard block, per §5's "truthful
+  // logging is never blocked": if they really did buy back in, they can
+  // still record it, flagged, after acknowledging the warning.
+  const substitutedOriginalNames = new Set(
+    (planContext?.substitutions ?? [])
+      .map((sub) => planContext?.fixedSlots.find((s) => s.id === sub.original_slot_id)?.tournament_name)
+      .filter((name): name is string => !!name)
+      .map((name) => name.trim().toLowerCase())
+  );
+
+  // Each locked slot can only be substituted once (see SubstitutionPanel) —
+  // hide the trigger once every slot already has one, rather than opening
+  // the panel just to show an empty state.
+  const hasSubstitutableSlots = (planContext?.fixedSlots ?? []).some(
+    (s) => !(planContext?.substitutions ?? []).some((sub) => sub.original_slot_id === s.id)
+  );
+
+  // Substitutions the player recorded but hasn't logged a first buy-in
+  // against yet — offered as a quick "Log Buy-in" action below, prefilling
+  // the replacement's name the same way exercisableConditionals' "Exercise"
+  // button prefills a conditional's.
+  const exercisableSubstitutions = (planContext?.substitutions ?? []).filter(
+    (sub) => !tournaments.some((t) => t.name.trim().toLowerCase() === sub.replacement_tournament_name.trim().toLowerCase())
+  );
 
   const handleEndSessionClick = () => {
     if (!canEndSession) return;
@@ -101,6 +181,38 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
         </div>
       )}
 
+      {/* Conditional Tournaments — every session, the player can exercise any
+          conditional from their locked Weekly Game Plan the moment they judge
+          its activation_condition met. This is always their own call, never
+          evaluated automatically (see activateConditionalTournament). */}
+      {planContext && exercisableConditionals.length > 0 && (
+        <div className="bg-surface border border-border rounded-[6px] overflow-hidden">
+          <div className="bg-surface-raised/60 border-b border-border px-4 py-2.5 flex items-center gap-2">
+            <GitBranch size={13} className="text-accent-steel" />
+            <span className="text-12 font-mono text-text-muted uppercase tracking-wider">Conditional Tournaments</span>
+          </div>
+          <div className="divide-y divide-border/40">
+            {exercisableConditionals.map((c) => (
+              <div key={c.id} className="p-4 flex items-center justify-between gap-4">
+                <div className="flex flex-col">
+                  <span className="text-14 font-medium text-text-primary">{c.tournament_name}</span>
+                  <span className="text-11 text-text-faint">If: {c.activation_condition}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFormMode({ type: 'conditional', contractId: planContext.contractId, conditional: c })
+                  }
+                  className="text-11 font-mono px-2.5 py-1.5 rounded-[4px] border border-accent-steel/40 text-accent-steel hover:bg-accent-steel/10 transition-colors shrink-0"
+                >
+                  Exercise
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Empty state */}
       {!loading && tournaments.length === 0 && (
         <div className="bg-surface border border-border rounded-[6px] p-8 flex flex-col items-center gap-3 text-center">
@@ -120,14 +232,23 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
         {tournaments.map((t) => {
           const isFinalized = t.net_return !== null;
           const hasEntries = (t.tournament_entries?.length ?? 0) > 0;
+          const isSubstitutedOriginal = substitutedOriginalNames.has(t.name.trim().toLowerCase());
           return (
-            <div key={t.id} className="bg-surface border border-border rounded-[6px] overflow-hidden">
+            <div
+              key={t.id}
+              className={`bg-surface border rounded-[6px] overflow-hidden ${isSubstitutedOriginal ? 'border-border/40 opacity-60' : 'border-border'}`}
+            >
               <div className="p-4 flex items-start justify-between gap-4 border-b border-border/60">
                 <div className="flex flex-col">
                   <div className="flex items-center gap-2">
                     <span className="text-14 font-semibold text-text-primary">{t.name}</span>
                     {t.tournament_number && (
                       <span className="text-11 font-mono text-text-faint">#{t.tournament_number}</span>
+                    )}
+                    {isSubstitutedOriginal && (
+                      <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-[4px] bg-surface-raised border border-border text-text-faint flex items-center gap-1">
+                        <Repeat size={10} /> Substituted
+                      </span>
                     )}
                     {isFinalized ? (
                       <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-[4px] bg-signal-process/10 border border-signal-process/30 text-signal-process">
@@ -156,8 +277,21 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => setFormMode({ type: 'reentry', tournamentId: t.id, tournamentName: t.name })}
-                        className="text-11 font-mono px-2 py-1 rounded-[4px] border border-border text-text-muted hover:text-text-primary hover:border-text-faint transition-colors"
+                        onClick={() =>
+                          isSubstitutedOriginal
+                            ? setConfirmReentryFor(t)
+                            : setFormMode({
+                                type: 'reentry',
+                                tournamentId: asTournamentId(t.id),
+                                tournamentName: t.name,
+                                prefillAmount: findPlannedBuyInAmount(t.name, planContext?.fixedSlots ?? [], planContext?.conditionals ?? []),
+                              })
+                        }
+                        className={
+                          isSubstitutedOriginal
+                            ? 'text-11 font-mono px-2 py-1 rounded-[4px] border border-dashed border-border text-text-faint hover:text-text-muted transition-colors'
+                            : 'text-11 font-mono px-2 py-1 rounded-[4px] border border-border text-text-muted hover:text-text-primary hover:border-text-faint transition-colors'
+                        }
                       >
                         + Buy-in
                       </button>
@@ -195,6 +329,72 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
         })}
       </div>
 
+      {/* Substitutions — replacing a locked slot with a different tournament
+          mid-session, e.g. the planned one didn't run. Append-only against
+          the locked Session Contract, never edits the original slot (§2.3,
+          §5). Lives here (not just SessionContractView) because the Play
+          tab renders TournamentLog for the whole ACTIVE lifetime of a
+          session — SessionContractView's own LOCKED view is only reachable
+          in the brief window/desync case described in PlayerShell. Placed
+          below the tournament list, not above it — this is a fallback path,
+          not the primary action on this screen. */}
+      {planContext && planContext.substitutions.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {planContext.substitutions.map((sub: SessionContractSubstitutionRow) => (
+            <div key={sub.id} className="bg-surface border border-signal-caution/30 rounded-[6px] p-4 flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-12 font-mono text-signal-caution uppercase">
+                  <Repeat size={12} /> Substitution — {sub.created_at ? new Date(sub.created_at).toLocaleString() : '—'}
+                </div>
+                {exercisableSubstitutions.some((s) => s.id === sub.id) && (
+                  <button
+                    type="button"
+                    onClick={() => setFormMode({ type: 'new', prefillName: sub.replacement_tournament_name, prefillAmount: sub.replacement_buy_in_amount })}
+                    className="text-11 font-mono px-2 py-1 rounded-[4px] border border-accent-steel/40 text-accent-steel hover:bg-accent-steel/10 transition-colors shrink-0"
+                  >
+                    Log Buy-in
+                  </button>
+                )}
+              </div>
+              <span className="text-13 text-text-primary">
+                → {sub.replacement_tournament_name}
+                {sub.replacement_buy_in_amount != null && (
+                  <span className="font-mono text-text-muted"> · {formatCurrency(sub.replacement_buy_in_amount)}, max {sub.replacement_permitted_buy_ins} buy-ins</span>
+                )}
+              </span>
+              <span className="text-12 text-text-muted">Reason: {sub.reason}</span>
+              {!sub.passed_brm_validation && (
+                <span className="text-11 text-signal-risk">Did not pass BRM validation at time of substitution.</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {planContext && hasSubstitutableSlots && (
+        <button
+          type="button"
+          onClick={() => setShowSubForm(true)}
+          className="self-start text-11 font-mono text-text-faint hover:text-text-muted transition-colors"
+        >
+          Substitute a locked tournament
+        </button>
+      )}
+
+      {showSubForm && planContext && (
+        <SubstitutionPanel
+          contractId={planContext.contractId}
+          slots={planContext.fixedSlots}
+          substitutions={planContext.substitutions}
+          brmLevelId={planContext.brmLevelId}
+          onClose={() => setShowSubForm(false)}
+          onSaved={() => {
+            setShowSubForm(false);
+            refreshPlanContext();
+          }}
+        />
+      )}
+
       {/* Floating action button — always reachable, per §2.4 */}
       <button
         type="button"
@@ -216,6 +416,7 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
             setLastFlags(flags ?? null);
             setFormMode(null);
             refresh();
+            refreshPlanContext();
           }}
         />
       )}
@@ -247,6 +448,22 @@ export default function TournamentLog({ sessionId, onEndSession }: TournamentLog
                   onConfirm={onEndSession}
                 />
         )}
+
+        {confirmReentryFor && (
+          <ConfirmSubstitutedReentry
+            tournamentName={confirmReentryFor.name}
+            onCancel={() => setConfirmReentryFor(null)}
+            onConfirm={() => {
+              setFormMode({
+                type: 'reentry',
+                tournamentId: asTournamentId(confirmReentryFor.id),
+                tournamentName: confirmReentryFor.name,
+                prefillAmount: findPlannedBuyInAmount(confirmReentryFor.name, planContext?.fixedSlots ?? [], planContext?.conditionals ?? []),
+              });
+              setConfirmReentryFor(null);
+            }}
+          />
+        )}
     </div>
   );
 }
@@ -263,16 +480,24 @@ function EntryFormPanel({
   onClose,
   onSaved,
 }: {
-  sessionId: string;
+  sessionId: SessionId;
   mode: NonNullable<FormMode>;
   saving: boolean;
   setSaving: (v: boolean) => void;
   onClose: () => void;
   onSaved: (flags?: ComplianceFlags) => void;
 }) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(mode.type === 'new' ? mode.prefillName ?? '' : '');
   const [number, setNumber] = useState('');
-  const [buyIn, setBuyIn] = useState('');
+  // Prefilled from the plan's buy-in amount when known (a fixed slot's or
+  // conditional's planned amount) — still an ordinary editable input, since
+  // the actual buy-in can legitimately differ from what was planned.
+  const [buyIn, setBuyIn] = useState(() => {
+    if (mode.type === 'reentry' && mode.prefillAmount) return String(mode.prefillAmount);
+    if (mode.type === 'conditional' && mode.conditional.buy_in_amount) return String(mode.conditional.buy_in_amount);
+    if (mode.type === 'new' && mode.prefillAmount) return String(mode.prefillAmount);
+    return '';
+  });
   const [winnings, setWinnings] = useState('');
   const [bestRank, setBestRank] = useState('');
   const [worstRank, setWorstRank] = useState('');
@@ -310,7 +535,7 @@ function EntryFormPanel({
       } else if (mode.type === 'finalize') {
         const win = parseFloat(winnings || '0');
         await finalizeTournament({
-          tournamentId: mode.tournament.id,
+          tournamentId: asTournamentId(mode.tournament.id),
           winningsGross: isNaN(win) ? 0 : win,
           bestRank: bestRank ? parseInt(bestRank, 10) : undefined,
           worstRank: worstRank ? parseInt(worstRank, 10) : undefined,
@@ -319,6 +544,19 @@ function EntryFormPanel({
           comments: comments || undefined,
         });
         onSaved();
+      } else if (mode.type === 'conditional') {
+        const amount = parseFloat(buyIn);
+        if (isNaN(amount) || amount <= 0) throw new Error('Enter a positive buy-in amount.');
+        // Player's own judgment that activation_condition is met, right now —
+        // never evaluated automatically. Activating first (idempotent) is what
+        // makes tournaments.ts recognize this as authorized, not unplanned.
+        await activateConditionalTournament(mode.contractId, mode.conditional);
+        const { flags } = await logNewTournamentEntry({
+          sessionId,
+          tournamentName: mode.conditional.tournament_name,
+          buyInAmount: amount,
+        });
+        onSaved(flags);
       }
     } catch (err) {
       setFormError(getErrorMessage(err));
@@ -328,7 +566,10 @@ function EntryFormPanel({
   };
 
   const title =
-    mode.type === 'new' ? 'Log Tournament' : mode.type === 'reentry' ? `Add Buy-in — ${mode.tournamentName}` : `Finalize — ${mode.tournament.name}`;
+    mode.type === 'new' ? 'Log Tournament'
+      : mode.type === 'reentry' ? `Add Buy-in — ${mode.tournamentName}`
+      : mode.type === 'conditional' ? `Exercise — ${mode.conditional.tournament_name}`
+      : `Finalize — ${mode.tournament.name}`;
 
   return (
     <div className="fixed inset-0 z-30 flex justify-end bg-ink/60" onClick={onClose}>
@@ -365,6 +606,12 @@ function EntryFormPanel({
                   <input value={number} onChange={(e) => setNumber(e.target.value)} className="input" />
                 </Field>
               </>
+            )}
+            {mode.type === 'conditional' && (
+              <div className="bg-surface-raised/60 border border-border rounded-[4px] p-3 flex flex-col gap-1">
+                <span className="text-12 text-text-faint">You're confirming this condition is met, right now:</span>
+                <span className="text-13 text-text-primary">If: {mode.conditional.activation_condition}</span>
+              </div>
             )}
             <Field label="Buy-in Amount (₹)">
               <input
@@ -485,6 +732,41 @@ function EndSessionConfirm({
           </button>
           <button type="button" onClick={onConfirm} className="flex-1 h-10 bg-signal-risk text-text-primary rounded-[4px] text-13 font-medium">
             End Session
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// A slot substitution means the player already told the system they're no
+// longer playing this tournament — buying back into it isn't blocked
+// (truthful logging is never blocked, §5) but it does need an explicit
+// acknowledgment first, the same "grey it out, warn, still allow" posture
+// SubstitutionPanel's own BRM check uses.
+function ConfirmSubstitutedReentry({
+  tournamentName,
+  onCancel,
+  onConfirm,
+}: {
+  tournamentName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink/60" onClick={onCancel}>
+      <div className="w-full max-w-sm bg-surface border border-border rounded-[6px] p-6 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+        <span className="text-16 font-display text-text-primary">Buy back into {tournamentName}?</span>
+        <p className="text-13 text-text-muted leading-relaxed">
+          You substituted this tournament earlier this session. Logging another buy-in against it is going against your plans. Are
+          you sure you want to continue?
+        </p>
+        <div className="flex gap-3">
+          <button type="button" onClick={onCancel} className="flex-1 h-10 border border-border rounded-[4px] text-13 text-text-muted">
+            Cancel
+          </button>
+          <button type="button" onClick={onConfirm} className="flex-1 h-10 bg-signal-risk text-text-primary rounded-[4px] text-13 font-medium">
+            Log Anyway
           </button>
         </div>
       </div>

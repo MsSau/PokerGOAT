@@ -22,6 +22,7 @@
 
 import { supabase } from './supabase';
 import { EscalationTrack, EscalationEvent, EscalationRuleVersion } from '../types';
+import { CoachId, EscalationTrackId } from '../types/ids';
 
 export interface LadderStage {
   index: number;
@@ -54,7 +55,7 @@ export interface EscalationTrackWithContext extends EscalationTrack {
 }
 
 /** Every active (stage > 0) track across the coach's roster, highest stage first. */
-export async function fetchTracksForCoach(coachId: string): Promise<EscalationTrackWithContext[]> {
+export async function fetchTracksForCoach(coachId: CoachId): Promise<EscalationTrackWithContext[]> {
   const { data: players, error: playersError } = await supabase
     .from('profiles')
     .select('id, email')
@@ -91,7 +92,7 @@ export async function fetchTracksForCoach(coachId: string): Promise<EscalationTr
 }
 
 /** Immutable audit trail for one track, newest first. */
-export async function fetchEventsForTrack(trackId: string): Promise<EscalationEvent[]> {
+export async function fetchEventsForTrack(trackId: EscalationTrackId): Promise<EscalationEvent[]> {
   const { data, error } = await supabase
     .from('escalation_events')
     .select('*')

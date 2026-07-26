@@ -1,4 +1,5 @@
 import { Database } from './types/database';
+import { SessionId, SessionContractId } from './types/ids';
 
 export type UserRole = Database['public']['Enums']['role_type'];
 
@@ -22,8 +23,8 @@ export type CoachRoute =
   | 'interventions';
 
 export interface ActiveSession {
-  id: string | null;           // sessions.id — needed by TournamentLog
-  contractId: string | null;   // sessions.contract_id
+  id: SessionId | null;           // sessions.id — needed by TournamentLog
+  contractId: SessionContractId | null;   // sessions.contract_id
   isActive: boolean;
   status: 'NONE' | 'ACTIVE' | 'REVIEW_PENDING' | 'FINALIZED';
   startTime: string | null;

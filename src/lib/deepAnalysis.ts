@@ -12,12 +12,16 @@ import { fetchBehavioralProfile } from './behavioralProfile';
 import { DIMENSION_LABELS } from './behavioralProfileEngine';
 import { VerdictDetail } from './verdicts';
 import { Database } from '../types/database';
+import {
+  PlayerId, CoachId, VerdictId, DeepAnalysisThreadId,
+  asDeepAnalysisThreadId,
+} from '../types/ids';
 
 export type SenderType = Database['public']['Enums']['sender_type'];
 
 export interface DeepAnalysisMessage {
   id: string;
-  threadId: string;
+  threadId: DeepAnalysisThreadId;
   senderType: SenderType;
   content: string;
   createdAt: string | null;
@@ -34,14 +38,14 @@ export interface DeepAnalysisContext {
 const EVIDENCE_SUMMARY_CAP = 15;
 
 /** Builds the context payload sent to the server — everything here is already something the player can read via RLS. */
-export async function assembleDeepAnalysisContext(playerId: string, verdict: VerdictDetail): Promise<DeepAnalysisContext> {
+export async function assembleDeepAnalysisContext(playerId: PlayerId, verdict: VerdictDetail): Promise<DeepAnalysisContext> {
   const evidenceSummary = Object.values(verdict.evidenceBySection)
     .flat()
     .map((item) => item.claimText)
     .slice(0, EVIDENCE_SUMMARY_CAP);
 
   const [profiles, directiveRes] = await Promise.all([
-    fetchBehavioralProfile(playerId).catch(() => []),
+    fetchBehavioralProfile(playerId).catch((): Awaited<ReturnType<typeof fetchBehavioralProfile>> => []),
     supabase
       .from('coach_directives')
       .select('directive_text')
@@ -65,7 +69,7 @@ export async function assembleDeepAnalysisContext(playerId: string, verdict: Ver
 }
 
 /** One open thread per Verdict — reuses an existing one if the player already opened Deep Analysis for this Verdict. */
-export async function fetchOrCreateThreadForVerdict(playerId: string, coachId: string, verdictId: string): Promise<string> {
+export async function fetchOrCreateThreadForVerdict(playerId: PlayerId, coachId: CoachId, verdictId: VerdictId): Promise<DeepAnalysisThreadId> {
   const { data: existing, error: findErr } = await supabase
     .from('deep_analysis_threads')
     .select('id')
@@ -75,7 +79,7 @@ export async function fetchOrCreateThreadForVerdict(playerId: string, coachId: s
     .limit(1)
     .maybeSingle();
   if (findErr) throw findErr;
-  if (existing) return existing.id;
+  if (existing) return asDeepAnalysisThreadId(existing.id);
 
   const { data: created, error: createErr } = await supabase
     .from('deep_analysis_threads')
@@ -83,10 +87,10 @@ export async function fetchOrCreateThreadForVerdict(playerId: string, coachId: s
     .select('id')
     .single();
   if (createErr) throw createErr;
-  return created.id;
+  return asDeepAnalysisThreadId(created.id);
 }
 
-export async function fetchThreadMessages(threadId: string): Promise<DeepAnalysisMessage[]> {
+export async function fetchThreadMessages(threadId: DeepAnalysisThreadId): Promise<DeepAnalysisMessage[]> {
   const { data, error } = await supabase
     .from('deep_analysis_messages')
     .select('id, thread_id, sender_type, content, created_at')
@@ -95,21 +99,21 @@ export async function fetchThreadMessages(threadId: string): Promise<DeepAnalysi
   if (error) throw error;
   return (data || []).map((row) => ({
     id: row.id,
-    threadId: row.thread_id,
+    threadId: asDeepAnalysisThreadId(row.thread_id),
     senderType: row.sender_type,
     content: row.content,
     createdAt: row.created_at,
   }));
 }
 
-async function insertMessage(threadId: string, senderType: SenderType, content: string): Promise<DeepAnalysisMessage> {
+async function insertMessage(threadId: DeepAnalysisThreadId, senderType: SenderType, content: string): Promise<DeepAnalysisMessage> {
   const { data, error } = await supabase
     .from('deep_analysis_messages')
     .insert({ thread_id: threadId, sender_type: senderType, content })
     .select('id, thread_id, sender_type, content, created_at')
     .single();
   if (error) throw error;
-  return { id: data.id, threadId: data.thread_id, senderType: data.sender_type, content: data.content, createdAt: data.created_at };
+  return { id: data.id, threadId: asDeepAnalysisThreadId(data.thread_id), senderType: data.sender_type, content: data.content, createdAt: data.created_at };
 }
 
 export interface SendMessageResult {
@@ -126,7 +130,7 @@ export interface SendMessageResult {
  * losing what was typed.
  */
 export async function sendDeepAnalysisMessage(
-  threadId: string,
+  threadId: DeepAnalysisThreadId,
   priorHistory: DeepAnalysisMessage[],
   content: string,
   context: DeepAnalysisContext,

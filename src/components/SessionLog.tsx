@@ -4,6 +4,7 @@ import { formatCurrency, medalColorClass } from '../lib/utils';
 import { Award } from 'lucide-react';
 import { useAsync } from '../lib/useAsync';
 import ReflectionModal from './ReflectionModal';
+import { PlayerId } from '../types/ids';
 
 interface SessionLogRow {
   id: string;
@@ -19,7 +20,7 @@ interface SessionLogRow {
   reflection_note: string | null;
 }
 
-export default function SessionLog({ userId }: { userId: string }) {
+export default function SessionLog({ userId }: { userId: PlayerId }) {
   const [viewingReflection, setViewingReflection] = useState<{ label: string; note: string } | null>(null);
 
   const { data, loading, error } = useAsync(async () => {

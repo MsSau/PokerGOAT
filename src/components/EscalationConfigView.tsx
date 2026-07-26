@@ -14,7 +14,7 @@
 // selected in Assignments, rather than making the coach re-pick both there.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertOctagon, ArrowRight, History, Search, ShieldAlert } from 'lucide-react';
+import { AlertOctagon, ArrowRight, History, Search, ShieldAlert, Send, Undo2 } from 'lucide-react';
 import {
   fetchTracksForCoach,
   fetchEventsForTrack,
@@ -25,14 +25,16 @@ import {
   EscalationTrackWithContext,
 } from '../lib/escalationConfig';
 import { fetchAssignmentsForCoach } from '../lib/interventions';
+import { fetchDirectivesForTrack, createCoachDirective, retractCoachDirective, CoachDirectiveRow } from '../lib/coachDirectives';
 import { EscalationEvent } from '../types';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage } from '../lib/utils';
 import ReasonModal from './ReasonModal';
+import { CoachId, PlayerId, ExecutionActionId, asEscalationTrackId, asPlayerId, asExecutionActionId } from '../types/ids';
 
 interface Props {
-  coachId: string;
-  onAssignIntervention?: (playerId: string, executionActionId: string) => void;
+  coachId: CoachId;
+  onAssignIntervention?: (playerId: PlayerId, executionActionId: ExecutionActionId) => void;
 }
 
 const TIER_DOT: Record<string, string> = {
@@ -55,6 +57,12 @@ export default function EscalationConfigView({ coachId, onAssignIntervention }: 
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [directives, setDirectives] = useState<CoachDirectiveRow[]>([]);
+  const [directivesLoading, setDirectivesLoading] = useState(false);
+  const [directiveText, setDirectiveText] = useState('');
+  const [savingDirective, setSavingDirective] = useState(false);
+  const [retractingId, setRetractingId] = useState<string | null>(null);
+
   const selected = useMemo(() => tracks?.find((t) => t.id === selectedId) ?? null, [tracks, selectedId]);
 
   const hasActiveAssignment = useMemo(() => {
@@ -72,7 +80,7 @@ export default function EscalationConfigView({ coachId, onAssignIntervention }: 
     if (!selected) return;
     let alive = true;
     setEventsLoading(true);
-    fetchEventsForTrack(selected.id)
+    fetchEventsForTrack(asEscalationTrackId(selected.id))
       .then((e) => alive && setEvents(e))
       .catch((err) => alive && setActionError(getErrorMessage(err)))
       .finally(() => alive && setEventsLoading(false));
@@ -80,6 +88,64 @@ export default function EscalationConfigView({ coachId, onAssignIntervention }: 
       alive = false;
     };
   }, [selected]);
+
+  const reloadDirectives = () => {
+    if (!selected) return;
+    setDirectivesLoading(true);
+    fetchDirectivesForTrack(asPlayerId(selected.player_id), asExecutionActionId(selected.execution_action_id))
+      .then(setDirectives)
+      .catch((err) => setActionError(getErrorMessage(err)))
+      .finally(() => setDirectivesLoading(false));
+  };
+
+  useEffect(() => {
+    setDirectiveText('');
+    if (!selected) {
+      setDirectives([]);
+      return;
+    }
+    let alive = true;
+    setDirectivesLoading(true);
+    fetchDirectivesForTrack(asPlayerId(selected.player_id), asExecutionActionId(selected.execution_action_id))
+      .then((d) => alive && setDirectives(d))
+      .catch((err) => alive && setActionError(getErrorMessage(err)))
+      .finally(() => alive && setDirectivesLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [selected]);
+
+  const handleAddDirective = async () => {
+    if (!selected || !directiveText.trim()) return;
+    setSavingDirective(true);
+    setActionError(null);
+    try {
+      await createCoachDirective({
+        playerId: asPlayerId(selected.player_id),
+        executionActionId: asExecutionActionId(selected.execution_action_id),
+        directiveText: directiveText.trim(),
+      });
+      setDirectiveText('');
+      reloadDirectives();
+    } catch (err) {
+      setActionError(getErrorMessage(err));
+    } finally {
+      setSavingDirective(false);
+    }
+  };
+
+  const handleRetractDirective = async (directiveId: string) => {
+    setRetractingId(directiveId);
+    setActionError(null);
+    try {
+      await retractCoachDirective(directiveId);
+      reloadDirectives();
+    } catch (err) {
+      setActionError(getErrorMessage(err));
+    } finally {
+      setRetractingId(null);
+    }
+  };
 
   const filteredTracks = useMemo(() => {
     if (!tracks) return [];
@@ -212,7 +278,7 @@ export default function EscalationConfigView({ coachId, onAssignIntervention }: 
                 {onAssignIntervention && (
                   <button
                     type="button"
-                    onClick={() => onAssignIntervention(selected.player_id, selected.execution_action_id)}
+                    onClick={() => onAssignIntervention(asPlayerId(selected.player_id), asExecutionActionId(selected.execution_action_id))}
                     className={`flex items-center gap-1.5 px-4 py-2.5 rounded text-12 font-semibold transition-colors cursor-pointer border ${
                       hasActiveAssignment
                         ? 'border-signal-process/30 bg-signal-process/10 text-signal-process hover:bg-signal-process/15'
@@ -222,6 +288,63 @@ export default function EscalationConfigView({ coachId, onAssignIntervention }: 
                     {hasActiveAssignment ? 'Intervention Assigned' : 'Assign Intervention'} <ArrowRight size={12} />
                   </button>
                 )}
+              </div>
+
+              {/* Coach Directives — scoped to this exact (player, action)
+                  track, not a general note. A track only exists once this
+                  action has already escalated past baseline, which is
+                  exactly the precondition for a directive to matter: its
+                  only effect is on the NEXT repeat's escalation stage
+                  (major_after_coach_directive / critical_after_coaching_
+                  or_intervention in evaluateEscalationTransition). */}
+              <div className="flex flex-col gap-2">
+                <span className="text-12 font-mono text-text-muted uppercase tracking-wider">Coach Directives</span>
+                {directivesLoading && <span className="text-12 text-text-muted">Loading...</span>}
+                {!directivesLoading && directives.length === 0 && (
+                  <span className="text-12 text-text-faint italic">No directives issued for this action yet.</span>
+                )}
+                {!directivesLoading &&
+                  directives.map((d) => (
+                    <div
+                      key={d.id}
+                      className={`border rounded-[6px] p-3 flex items-start justify-between gap-3 ${d.retractedAt ? 'border-border/50 opacity-60' : 'border-border'}`}
+                    >
+                      <div className="flex flex-col gap-1">
+                        <span className={`text-13 ${d.retractedAt ? 'text-text-muted line-through' : 'text-text-primary'}`}>{d.directiveText}</span>
+                        <span className="text-11 font-mono text-text-faint">
+                          {d.createdAt ? new Date(d.createdAt).toLocaleString() : '—'}
+                          {d.retractedAt && ` · Retracted ${new Date(d.retractedAt).toLocaleString()}`}
+                        </span>
+                      </div>
+                      {!d.retractedAt && (
+                        <button
+                          type="button"
+                          disabled={retractingId === d.id}
+                          onClick={() => handleRetractDirective(d.id)}
+                          className="flex items-center gap-1 text-11 font-mono px-2 py-1 rounded-[4px] border border-border text-text-muted hover:text-signal-risk hover:border-signal-risk/40 transition-colors shrink-0 disabled:opacity-40"
+                        >
+                          <Undo2 size={11} /> {retractingId === d.id ? 'Retracting…' : 'Retract'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                <div className="flex items-end gap-2 pt-1">
+                  <textarea
+                    rows={2}
+                    value={directiveText}
+                    onChange={(e) => setDirectiveText(e.target.value)}
+                    placeholder="e.g. Stop playing past your stop-loss — we agreed on this last week."
+                    className="flex-1 bg-ink border border-border focus:border-accent-steel focus:outline-none rounded-[6px] p-2.5 text-13 text-text-primary placeholder:text-text-faint transition-colors"
+                  />
+                  <button
+                    type="button"
+                    disabled={!directiveText.trim() || savingDirective}
+                    onClick={handleAddDirective}
+                    className="flex items-center gap-1.5 px-4 py-2.5 rounded text-12 font-semibold border border-accent-steel/40 text-accent-steel hover:bg-accent-steel/10 transition-colors cursor-pointer disabled:opacity-40 shrink-0"
+                  >
+                    <Send size={12} /> {savingDirective ? 'Issuing…' : 'Issue Directive'}
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-col gap-2">

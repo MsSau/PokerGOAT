@@ -26,17 +26,22 @@ import { supabase } from '../lib/supabase';
 import { formatCurrency, getErrorMessage } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import { fetchAvailablePreparationRecord, PreparationRecordRow } from '../lib/preparation';
+import { fetchSlotRulesForBRMLevel, fetchMaxTournamentBuyInForLevel } from '../lib/brmRules';
+import {
+  PlayerId, CoachId, SessionId, SessionContractId, PokerWeekId, BoundaryConfigId, WGPTournamentSlotId, BRMLevelId,
+  asCoachId, asSessionContractId, asPreparationId, asWGPTournamentSlotId,
+} from '../types/ids';
 
 interface SessionContractViewProps {
-  userId: string;
-  onSessionStarted: (sessionId: string) => void;
+  userId: PlayerId;
+  onSessionStarted: (sessionId: SessionId) => void;
   onGoToPrepare: () => void;
 }
 
 export default function SessionContractView({ userId, onSessionStarted, onGoToPrepare }: SessionContractViewProps) {
-  const [coachId, setCoachId] = useState<string | null>(null);
-  const [pokerWeekId, setPokerWeekId] = useState<string | null>(null);
-  const [boundaryConfigId, setBoundaryConfigId] = useState<string | null>(null);
+  const [coachId, setCoachId] = useState<CoachId | null>(null);
+  const [pokerWeekId, setPokerWeekId] = useState<PokerWeekId | null>(null);
+  const [boundaryConfigId, setBoundaryConfigId] = useState<BoundaryConfigId | null>(null);
   const [plan, setPlan] = useState<WeeklyGamePlanSummary | null>(null);
   const [slots, setSlots] = useState<WGPTournamentSlot[]>([]);
   const [conditionals, setConditionals] = useState<WGPConditionalTournament[]>([]);
@@ -54,7 +59,7 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
 
   const { loading, error, setError, reload: load } = useAsync(async () => {
     const { data: profile } = await supabase.from('profiles').select('coach_id').eq('id', userId).single();
-    setCoachId(profile?.coach_id ?? null);
+    setCoachId(profile?.coach_id ? asCoachId(profile.coach_id) : null);
 
     setAvailablePreparation(await fetchAvailablePreparationRecord(userId));
 
@@ -96,8 +101,8 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
       setContract(existing);
       if (existing.status === 'LOCKED') {
         const [tourns, subs] = await Promise.all([
-          fetchLockedContractTournaments(existing.id),
-          fetchSubstitutions(existing.id),
+          fetchLockedContractTournaments(asSessionContractId(existing.id)),
+          fetchSubstitutions(asSessionContractId(existing.id)),
         ]);
         setLockedSlots(tourns);
         setSubstitutions(subs);
@@ -167,8 +172,8 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
     setError(null);
     try {
       const { sessionId } = await lockContractAndStartSession({
-        contractId: contract.id,
-        preparationId: availablePreparation.id,
+        contractId: asSessionContractId(contract.id),
+        preparationId: asPreparationId(availablePreparation.id),
       });
       onSessionStarted(sessionId);
     } catch (err) {
@@ -227,7 +232,9 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
               {lockedSlots.map((s) => (
                 <div key={s.id} className="flex items-center justify-between text-13 bg-surface-raised/40 rounded-[4px] px-3 py-2">
                   <span className="text-text-primary">{s.tournament_name}</span>
-                  <span className="font-mono text-text-muted">Max {s.permitted_buy_ins} buy-ins</span>
+                  <span className="font-mono text-text-muted">
+                    Max {s.permitted_buy_ins} buy-ins{s.buy_in_amount ? ` @ ${formatCurrency(s.buy_in_amount)}` : ''}
+                  </span>
                 </div>
               ))}
             </div>
@@ -255,10 +262,12 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
           Substitute this tournament
         </button>
 
-        {showSubForm && contract && (
+        {showSubForm && contract && brmAssignment && (
           <SubstitutionPanel
-            contractId={contract.id}
+            contractId={asSessionContractId(contract.id)}
             slots={lockedSlots}
+            substitutions={substitutions}
+            brmLevelId={brmAssignment.brm_level_id}
             onClose={() => setShowSubForm(false)}
             onSaved={() => {
               setShowSubForm(false);
@@ -356,7 +365,9 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
                 <span className="text-11 font-mono text-text-faint">Slot {slot.slot_number}</span>
               </div>
             </div>
-            <span className="text-12 font-mono text-text-muted">Max {slot.permitted_buy_ins} buy-ins</span>
+            <span className="text-12 font-mono text-text-muted">
+              Max {slot.permitted_buy_ins} buy-ins{slot.buy_in_amount ? ` @ ${formatCurrency(slot.buy_in_amount)}` : ''}
+            </span>
           </label>
         ))}
 
@@ -379,7 +390,9 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
                 <span className="text-11 text-text-faint">If: {c.activation_condition}</span>
               </div>
             </div>
-            <span className="text-12 font-mono text-text-muted">Max {c.permitted_buy_ins} buy-ins</span>
+            <span className="text-12 font-mono text-text-muted">
+              Max {c.permitted_buy_ins} buy-ins{c.buy_in_amount ? ` @ ${formatCurrency(c.buy_in_amount)}` : ''}
+            </span>
           </label>
         ))}
       </div>
@@ -425,41 +438,53 @@ export default function SessionContractView({ userId, onSessionStarted, onGoToPr
   );
 }
 
-function SubstitutionPanel({
+export function SubstitutionPanel({
   contractId,
   slots,
+  substitutions,
+  brmLevelId,
   onClose,
   onSaved,
 }: {
-  contractId: string;
+  contractId: SessionContractId;
   slots: SessionContractTournamentRow[];
+  substitutions: SessionContractSubstitutionRow[];
+  brmLevelId: BRMLevelId;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [originalSlotId, setOriginalSlotId] = useState(slots[0]?.id ?? '');
+  // A slot can only be substituted once — BRM's per-session simultaneous-
+  // table limit was already validated against the fixed slot count at
+  // contract creation (weeklyGamePlan.ts's validateWeeklyGamePlan); letting
+  // the same slot be re-substituted repeatedly would silently let a player
+  // stack more distinct tournaments into one sitting than that count
+  // permits. A substitution changes which tournament occupies a slot, it
+  // doesn't add a new one.
+  const availableSlots = slots.filter((s) => !substitutions.some((sub) => sub.original_slot_id === s.id));
+  const [originalSlotId, setOriginalSlotId] = useState(availableSlots[0]?.id ?? '');
   const [name, setName] = useState('');
   const [buyIns, setBuyIns] = useState('1');
+  const [buyInAmount, setBuyInAmount] = useState('');
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Set once the BRM re-check below fails — holds the panel in a confirm
+  // step ("are you sure?") instead of writing immediately. Truthful logging
+  // is never blocked (§5): the player can still record a non-compliant
+  // substitution, they just have to explicitly acknowledge it first, the
+  // same posture EndSessionConfirm uses elsewhere in the app.
+  const [brmWarning, setBrmWarning] = useState<string | null>(null);
 
-  const submit = async () => {
-    if (!name.trim() || !reason.trim()) {
-      setErr('Replacement tournament and reason are both required.');
-      return;
-    }
+  const doSubmit = async (permittedBuyIns: number, amount: number, passed: boolean) => {
     setSaving(true);
     setErr(null);
     try {
-      // MVP validation: buy-in count must be a positive integer. A full
-      // BRM re-check (max tournament buy-in $, slot rules) belongs in the
-      // shared BRM validation module — wire in once that module exists.
-      const passed = parseInt(buyIns, 10) > 0;
       await substituteTournament({
         contractId,
-        originalSlotId: originalSlotId || null,
+        originalSlotId: originalSlotId ? asWGPTournamentSlotId(originalSlotId) : null,
         replacementTournamentName: name,
-        replacementPermittedBuyIns: parseInt(buyIns, 10),
+        replacementPermittedBuyIns: permittedBuyIns,
+        replacementBuyInAmount: amount,
         reason,
         passedBrmValidation: passed,
       });
@@ -471,35 +496,144 @@ function SubstitutionPanel({
     }
   };
 
+  const submit = async () => {
+    const amount = parseFloat(buyInAmount);
+    if (!name.trim() || !reason.trim() || isNaN(amount) || amount <= 0) {
+      setErr('Replacement tournament, a positive buy-in amount, and reason are all required.');
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const permittedBuyIns = parseInt(buyIns, 10);
+
+      // Real re-check against the coach's BRM-configured rules (same rules
+      // weeklyGamePlan.ts's validateWeeklyGamePlan enforces at plan
+      // creation): the replacement's permitted buy-ins can't exceed what
+      // the original slot's table number is allowed, and its buy-in amount
+      // can't exceed the BRM level's flat per-tournament maximum.
+      const originalSlot = availableSlots.find((s) => s.id === originalSlotId);
+      const [slotRules, maxTournamentBuyIn] = await Promise.all([
+        fetchSlotRulesForBRMLevel(brmLevelId),
+        fetchMaxTournamentBuyInForLevel(brmLevelId),
+      ]);
+      const rule = originalSlot ? slotRules?.find((r) => r.slotNumber === originalSlot.slot_number) : null;
+      const countOk = permittedBuyIns > 0 && !!rule && permittedBuyIns <= rule.maxBuyIns;
+      const amountOk = maxTournamentBuyIn === null || amount <= maxTournamentBuyIn;
+      const passed = countOk && amountOk;
+
+      if (!passed) {
+        const reasons: string[] = [];
+        if (!countOk) {
+          reasons.push(
+            !rule
+              ? `Table ${originalSlot?.slot_number ?? '?'} isn't permitted at your current BRM level`
+              : `${permittedBuyIns} permitted buy-in(s) exceeds your BRM limit of ${rule.maxBuyIns} for this table`
+          );
+        }
+        if (!amountOk) {
+          reasons.push(`${formatCurrency(amount)} exceeds your BRM per-tournament maximum of ${formatCurrency(maxTournamentBuyIn!)}`);
+        }
+        setSaving(false);
+        setBrmWarning(`${reasons.join('. ')} — this substitution will be recorded as non-compliant.`);
+        return;
+      }
+
+      await doSubmit(permittedBuyIns, amount, true);
+    } catch (e) {
+      setErr(getErrorMessage(e));
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-30 flex justify-end bg-ink/60" onClick={onClose}>
-      <div className="w-full max-w-sm h-full bg-surface border-l border-border p-6 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-sm h-full bg-surface border-l border-border p-6 flex flex-col gap-4 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <span className="text-16 font-display text-text-primary">Substitute Tournament</span>
           <button onClick={onClose} className="text-text-muted hover:text-text-primary"><X size={18} /></button>
         </div>
         {err && <span className="text-12 text-signal-risk">{err}</span>}
+        {availableSlots.length === 0 ? (
+          <div className="flex items-start gap-2 bg-signal-caution/10 border border-signal-caution/30 rounded-[4px] p-3">
+            <span className="text-12 text-signal-caution leading-relaxed">
+              Every locked tournament has already been substituted this session — a slot can only be substituted once.
+            </span>
+          </div>
+        ) : (
+        <>
         <label className="flex flex-col gap-1.5">
           <span className="text-12 font-mono text-text-muted uppercase">Original Slot</span>
-          <select value={originalSlotId} onChange={(e) => setOriginalSlotId(e.target.value)} className="input">
-            {slots.map((s) => <option key={s.id} value={s.id}>{s.tournament_name}</option>)}
+          <select
+            value={originalSlotId}
+            onChange={(e) => { setOriginalSlotId(e.target.value); setBrmWarning(null); }}
+            disabled={!!brmWarning}
+            className="input"
+          >
+            {availableSlots.map((s) => <option key={s.id} value={s.id}>{s.tournament_name}</option>)}
           </select>
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-12 font-mono text-text-muted uppercase">Replacement Tournament</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input" />
+          <input value={name} onChange={(e) => { setName(e.target.value); setBrmWarning(null); }} disabled={!!brmWarning} className="input" />
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-12 font-mono text-text-muted uppercase">Permitted Buy-ins</span>
-          <input type="number" value={buyIns} onChange={(e) => setBuyIns(e.target.value)} className="input" />
+          <input
+            type="number"
+            value={buyIns}
+            onChange={(e) => { setBuyIns(e.target.value); setBrmWarning(null); }}
+            disabled={!!brmWarning}
+            className="input"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-12 font-mono text-text-muted uppercase">Buy-in Amount (₹)</span>
+          <input
+            type="number"
+            value={buyInAmount}
+            onChange={(e) => { setBuyInAmount(e.target.value); setBrmWarning(null); }}
+            disabled={!!brmWarning}
+            placeholder="5500"
+            className="input"
+          />
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-12 font-mono text-text-muted uppercase">Reason</span>
-          <textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} className="input" />
+          <textarea rows={3} value={reason} onChange={(e) => { setReason(e.target.value); setBrmWarning(null); }} disabled={!!brmWarning} className="input" />
         </label>
-        <button disabled={saving} onClick={submit} className="h-10 bg-accent-steel text-text-primary rounded-[4px] text-14 font-medium disabled:opacity-50">
-          {saving ? 'Saving…' : 'Confirm Substitution'}
-        </button>
+        </>
+        )}
+
+        {availableSlots.length > 0 && (brmWarning ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-start gap-2 bg-signal-risk/10 border border-signal-risk/30 rounded-[4px] p-3">
+              <AlertTriangle size={14} className="text-signal-risk mt-0.5 shrink-0" />
+              <span className="text-12 text-signal-risk leading-relaxed">{brmWarning} Are you sure you want to continue?</span>
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setBrmWarning(null)}
+                className="flex-1 h-10 border border-border rounded-[4px] text-13 text-text-muted"
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => doSubmit(parseInt(buyIns, 10), parseFloat(buyInAmount), false)}
+                className="flex-1 h-10 bg-signal-risk text-text-primary rounded-[4px] text-13 font-medium disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Log Anyway'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button disabled={saving} onClick={submit} className="h-10 bg-accent-steel text-text-primary rounded-[4px] text-14 font-medium disabled:opacity-50">
+            {saving ? 'Saving…' : 'Confirm Substitution'}
+          </button>
+        ))}
       </div>
     </div>
   );

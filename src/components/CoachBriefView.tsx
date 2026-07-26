@@ -4,10 +4,11 @@ import { fetchWeeklyCoachBrief } from '../lib/coachBrief';
 import { formatCurrency, medalColorClass } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import ReflectionModal from './ReflectionModal';
+import { PlayerId, CoachId } from '../types/ids';
 
 interface CoachBriefViewProps {
-  playerId: string;
-  coachId: string;
+  playerId: PlayerId;
+  coachId: CoachId;
 }
 
 function SectionHeader({ title, hint }: { title: string; hint: string }) {

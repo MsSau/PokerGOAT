@@ -13,6 +13,7 @@ import {
   BRMBankrollBand,
   BRMLevel
 } from '../types';
+import { PlayerId, CoachId, asCoachId, asPlayerId } from '../types/ids';
 
 // Read from env vars with literal hardcoded defaults to guarantee operation in the iframe
 const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL || 'https://ojbkvxjphzrbteyipkxo.supabase.co';
@@ -54,7 +55,7 @@ export async function testSupabaseConnection(): Promise<boolean> {
  * Fetches the role of the user from the `profiles` table.
  * If the query fails or profiles don't exist, we fallback intelligently based on email keywords or local storage.
  */
-export async function getUserRole(userId: string, email?: string): Promise<UserRole> {
+export async function getUserRole(userId: PlayerId, email?: string): Promise<UserRole> {
   const { data, error } = await supabase
     .from('profiles')
     .select('role')
@@ -81,9 +82,9 @@ export async function getUserRole(userId: string, email?: string): Promise<UserR
  * 1. If role = COACH, it's their own id.
  * 2. If role = PLAYER, it's profiles.coach_id.
  */
-export async function resolveCoachId(userId: string, role: UserRole): Promise<string> {
+export async function resolveCoachId(userId: PlayerId, role: UserRole): Promise<CoachId> {
   if (role === 'COACH') {
-    return userId;
+    return asCoachId(userId);
   }
 
   const { data, error } = await supabase
@@ -101,13 +102,27 @@ export async function resolveCoachId(userId: string, role: UserRole): Promise<st
     throw new Error('Coach ID not found for player');
   }
 
-  return data.coach_id;
+  return asCoachId(data.coach_id);
+}
+
+// Non-throwing counterpart to resolveCoachId, for callers that need to tell
+// "not assigned yet" apart from an actual error — App.tsx uses this to show
+// a waiting screen for a freshly-registered player with no coach_id yet,
+// rather than letting every coach-dependent fetch downstream fail.
+export async function fetchProfileCoachId(userId: PlayerId): Promise<CoachId | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('coach_id')
+    .eq('id', userId)
+    .single();
+  if (error) throw error;
+  return data?.coach_id ? asCoachId(data.coach_id) : null;
 }
 
 /**
  * Fetches the active performance framework and version
  */
-export async function getActiveFramework(coachId: string): Promise<{
+export async function getActiveFramework(coachId: CoachId): Promise<{
   framework: PerformanceFramework;
   version: FrameworkVersion;
 }> {
@@ -154,7 +169,7 @@ export async function getActiveFramework(coachId: string): Promise<{
 /**
  * Fetches active BRM configurations, versions, bands and levels
  */
-export async function getActiveBRM(coachId: string): Promise<{
+export async function getActiveBRM(coachId: CoachId): Promise<{
   config: BRMConfiguration;
   version: BRMConfigVersion;
   bands: BRMBankrollBand[];
@@ -223,7 +238,7 @@ export async function getActiveBRM(coachId: string): Promise<{
   }
 }
 
-export async function fetchPokerWeekBoundaryConfig(coachId: string) {
+export async function fetchPokerWeekBoundaryConfig(coachId: CoachId) {
   const { data, error } = await supabase
     .from('poker_week_boundary_configs')
     .select('*')
@@ -234,7 +249,7 @@ export async function fetchPokerWeekBoundaryConfig(coachId: string) {
   return data;
 }
 
-export async function fetchLatestBRMAssignment(userId: string): Promise<WeeklyBRMAssignmentSummary | null> {
+export async function fetchLatestBRMAssignment(userId: PlayerId): Promise<WeeklyBRMAssignmentSummary | null> {
   const { data, error } = await supabase
     .from('weekly_brm_assignments')
     .select(`
@@ -253,14 +268,14 @@ export async function fetchLatestBRMAssignment(userId: string): Promise<WeeklyBR
     .maybeSingle();
 
   if (error) throw error;
-  return data;
+  return data as WeeklyBRMAssignmentSummary | null;
 }
 
-export async function fetchPlayerDashboardData(userId: string) {
+export async function fetchPlayerDashboardData(userId: PlayerId) {
   // 1. Fetch profile to get coach_id
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('coach_id')
+    .select('coach_id, display_name')
     .eq('id', userId)
     .single();
 
@@ -268,7 +283,7 @@ export async function fetchPlayerDashboardData(userId: string) {
   if (!profile.coach_id) throw new Error('No coach assigned to this player profile.');
 
   // 2. Fetch boundary config
-  const boundaryConfig = await fetchPokerWeekBoundaryConfig(profile.coach_id);
+  const boundaryConfig = await fetchPokerWeekBoundaryConfig(asCoachId(profile.coach_id));
 
   // 3. Fetch latest weekly_brm_assignments and join brm_levels
   const { data: brmData, error: brmError } = await supabase
@@ -300,12 +315,12 @@ export async function fetchPlayerDashboardData(userId: string) {
   // WeeklyBRMAssignmentWithLevel.brm_levels ({ level_index } | null, not an
   // array) for every consumer of this function.
   const normalizedBrmData: WeeklyBRMAssignmentWithLevel | null = brmData
-    ? {
+    ? ({
         ...brmData,
         brm_levels: Array.isArray(brmData.brm_levels)
           ? brmData.brm_levels[0] ?? null
           : brmData.brm_levels,
-      }
+      } as WeeklyBRMAssignmentWithLevel)
     : null;
 
   // 4. Fetch last 10 sessions with verdicts/assessments
@@ -333,6 +348,7 @@ export async function fetchPlayerDashboardData(userId: string) {
   }
 
   return {
+    displayName: profile.display_name,
     brmAssignment: normalizedBrmData,
     sessions: sessionsData || [],
     boundaryConfig,
@@ -340,7 +356,7 @@ export async function fetchPlayerDashboardData(userId: string) {
   };
 }
 
-export async function fetchActiveSession(playerId: string) {
+export async function fetchActiveSession(playerId: PlayerId) {
   const { data, error } = await supabase
     .from('sessions')
     .select('id, contract_id, start_time, status')
@@ -354,4 +370,122 @@ export async function fetchActiveSession(playerId: string) {
 
      //if (error) throw error;
     //return data;
+}
+
+// ============================================================================
+// REGISTRATION — self-service sign-up (PLAYER or COACH), plus the coach-side
+// roster-claiming step that follows it. Until this, every `profiles` row was
+// created manually — there was no INSERT policy on the table at all.
+//
+// `auth.signUp` may or may not return an active session depending on this
+// Supabase project's email-confirmation setting (can't be verified from this
+// environment which is live). If it does, we proceed straight to creating
+// the `profiles` row in the same call; if it doesn't (data.session is null),
+// there is no authenticated context yet to write with, so callers get
+// `{ status: 'pending_confirmation' }` back and should tell the user to
+// confirm their email, then sign in normally.
+// ============================================================================
+
+export type RegisterResult<T> = { status: 'ok'; userId: T } | { status: 'pending_confirmation' };
+
+export interface RegisterPlayerParams {
+  email: string;
+  password: string;
+  displayName: string;
+  openingBankroll: number;
+}
+
+// Records the player's self-declared opening bankroll as a real
+// OPENING_CAPITAL ledger entry immediately — a deliberate, narrowly-scoped
+// exception to bankroll_ledger_entries' normal coach-only OPENING_CAPITAL
+// rule (see the "Players self-declare opening capital once at registration"
+// RLS policy's comment in the migration for the full rationale/trade-off).
+export async function registerPlayer(params: RegisterPlayerParams): Promise<RegisterResult<PlayerId>> {
+  const { data, error } = await supabase.auth.signUp({ email: params.email, password: params.password });
+  if (error) throw error;
+  if (!data.session || !data.user) {
+    return { status: 'pending_confirmation' };
+  }
+  const userId = asPlayerId(data.user.id);
+
+  const { error: profileError } = await supabase.from('profiles').insert({
+    id: userId,
+    email: params.email,
+    role: 'PLAYER',
+    display_name: params.displayName.trim() || null,
+  });
+  if (profileError) throw profileError;
+
+  if (params.openingBankroll > 0) {
+    const { error: bankrollError } = await supabase.from('bankroll_ledger_entries').insert({
+      player_id: userId,
+      recorded_by: userId,
+      entry_type: 'OPENING_CAPITAL',
+      amount: params.openingBankroll,
+      note: 'Self-declared at registration',
+    });
+    if (bankrollError) throw bankrollError;
+  }
+
+  return { status: 'ok', userId };
+}
+
+export interface RegisterCoachParams {
+  email: string;
+  password: string;
+  displayName: string;
+}
+
+export async function registerCoach(params: RegisterCoachParams): Promise<RegisterResult<CoachId>> {
+  const { data, error } = await supabase.auth.signUp({ email: params.email, password: params.password });
+  if (error) throw error;
+  if (!data.session || !data.user) {
+    return { status: 'pending_confirmation' };
+  }
+  const userId = asCoachId(data.user.id);
+
+  const { error: profileError } = await supabase.from('profiles').insert({
+    id: userId,
+    email: params.email,
+    role: 'COACH',
+    display_name: params.displayName.trim() || null,
+  });
+  if (profileError) throw profileError;
+
+  return { status: 'ok', userId };
+}
+
+export interface UnclaimedPlayer {
+  id: PlayerId;
+  email: string;
+  displayName: string | null;
+}
+
+// Every PLAYER profile with no coach yet — visible only to authenticated
+// COACHes (see "Coaches see unclaimed players" RLS policy, gated by
+// fn_is_coach()), for the registration-time roster-claim picker.
+export async function fetchUnclaimedPlayers(): Promise<UnclaimedPlayer[]> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, email, display_name')
+    .is('coach_id', null)
+    .eq('role', 'PLAYER');
+  if (error) throw error;
+  return (data || []).map((p) => ({ id: asPlayerId(p.id), email: p.email, displayName: p.display_name }));
+}
+
+// One UPDATE per player rather than a single .in(...) batch — mirrors this
+// codebase's existing "two-call MVP shortcut" posture (see sessionContract.ts's
+// lockContractAndStartSession comment) rather than introducing a new RPC for
+// this. The RLS policy's own USING clause (coach_id IS NULL) makes each call
+// a no-op, not an error, if another coach claimed that player first.
+export async function claimPlayers(coachId: CoachId, playerIds: PlayerId[]): Promise<void> {
+  for (const playerId of playerIds) {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ coach_id: coachId })
+      .eq('id', playerId)
+      .is('coach_id', null);
+    if (error) throw error;
+  }
 }

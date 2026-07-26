@@ -3,6 +3,7 @@ import { ChevronRight, X } from 'lucide-react';
 import { fetchCurrentPokerWeek, fetchLockedWeeklyGamePlan } from '../lib/sessionContract';
 import { useAsync } from '../lib/useAsync';
 import { formatCurrency } from '../lib/utils';
+import { PlayerId } from '../types/ids';
 
 type Step =
   | 'entry'
@@ -47,7 +48,7 @@ export interface RitualFreeText {
 }
 
 interface PreGameRitualProps {
-  userId: string;
+  userId: PlayerId;
   sleepHours: number | null;
   meditationMinutes: number | null;
   defaultStopLoss: number;

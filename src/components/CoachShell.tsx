@@ -8,8 +8,9 @@ import InterventionsConfigView, { AssignmentPrefill } from './InterventionsConfi
 import CoachBriefView from './CoachBriefView';
 import BehavioralProfileView from './BehavioralProfileView';
 import { fetchCoachRoster } from '../lib/coachRoster';
-import { supabase } from '../lib/supabase';
+import { supabase, fetchUnclaimedPlayers, claimPlayers, UnclaimedPlayer } from '../lib/supabase';
 import { useAsync } from '../lib/useAsync';
+import { PlayerId, CoachId, ExecutionActionId, asCoachId, asPlayerId } from '../types/ids';
 import {
   FileText,
   TrendingUp,
@@ -25,11 +26,12 @@ import {
   User,
   ShieldAlert,
   CheckSquare,
-  Sparkles
+  Sparkles,
+  UserPlus,
 } from 'lucide-react';
 
 interface CoachShellProps {
-  userId: string;
+  userId: PlayerId;
   userEmail: string;
   onLogout: () => void;
   onSwitchRole: (role: UserRole) => void;
@@ -49,15 +51,25 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
   const { data: coachId } = useAsync(async () => {
     const { data: profile, error } = await supabase.from('profiles').select('role, coach_id').eq('id', userId).single();
     if (error) throw error;
-    return profile.role === 'COACH' ? userId : profile.coach_id;
+    return profile.role === 'COACH' ? asCoachId(userId) : profile.coach_id ? asCoachId(profile.coach_id) : null;
   }, [userId]);
 
-  const { data: roster, loading: rosterLoading, error: rosterError } = useAsync(
+  // Looked up by coachId directly (not userId) so this is right in both
+  // cases above — the real coach's own profile, not the sandbox-override
+  // player's.
+  const { data: coachName } = useAsync(async () => {
+    if (!coachId) return null;
+    const { data, error } = await supabase.from('profiles').select('display_name').eq('id', coachId).single();
+    if (error) throw error;
+    return data.display_name;
+  }, [coachId]);
+
+  const { data: roster, loading: rosterLoading, error: rosterError, reload: reloadRoster } = useAsync(
     () => (coachId ? fetchCoachRoster(coachId) : Promise.resolve([])),
     [coachId]
   );
 
-  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<PlayerId | null>(null);
   useEffect(() => {
     if (!selectedPlayerId && roster && roster.length > 0) {
       setSelectedPlayerId(roster[0].playerId);
@@ -70,7 +82,7 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
   // that player + track already selected instead of making the coach
   // re-pick both there.
   const [assignPrefill, setAssignPrefill] = useState<AssignmentPrefill | null>(null);
-  function handleAssignIntervention(playerId: string, executionActionId: string) {
+  function handleAssignIntervention(playerId: PlayerId, executionActionId: ExecutionActionId) {
     setAssignPrefill({ playerId, executionActionId, token: Date.now() });
     setActiveTab('interventions');
   }
@@ -227,7 +239,7 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
               Portal:
             </span>
             <span className="text-14 font-sans font-semibold text-text-primary">
-              Julian's Coaching Wing
+              {coachName ? `Coach ${coachName}'s Coaching Wing` : "Coach's Coaching Wing"}
             </span>
           </div>
 
@@ -274,6 +286,8 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
               </p>
             </div>
 
+            {coachId && <UnclaimedPlayersPanel coachId={coachId} onClaimed={reloadRoster} />}
+
             {/* DYNAMIC VIEWPORTS */}
             {activeTab === 'brief' && (
               <div className="flex flex-col gap-6 animate-fade-in">
@@ -296,7 +310,7 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
                       <label className="text-12 font-mono text-text-muted uppercase tracking-wider">Player</label>
                       <select
                         value={selectedPlayerId ?? ''}
-                        onChange={(e) => setSelectedPlayerId(e.target.value)}
+                        onChange={(e) => setSelectedPlayerId(asPlayerId(e.target.value))}
                         className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze"
                       >
                         {roster.map((p) => (
@@ -331,7 +345,7 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
                       <label className="text-12 font-mono text-text-muted uppercase tracking-wider">Player</label>
                       <select
                         value={selectedPlayerId ?? ''}
-                        onChange={(e) => setSelectedPlayerId(e.target.value)}
+                        onChange={(e) => setSelectedPlayerId(asPlayerId(e.target.value))}
                         className="bg-ink border border-border rounded p-2 text-14 text-text-primary focus:outline-none focus:border-accent-bronze"
                       >
                         {roster.map((p) => (
@@ -450,6 +464,77 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
           </div>
 
         </main>
+      </div>
+    </div>
+  );
+}
+
+// Self-registered players start with no coach (profiles.coach_id IS NULL —
+// see App.tsx's "waiting for your coach" screen, which is what they see
+// until this panel claims them). Shown on every tab, not just once at
+// registration, so it also covers a player who registers after this coach
+// already has a roster. Renders nothing once there's nothing to claim.
+function UnclaimedPlayersPanel({ coachId, onClaimed }: { coachId: CoachId; onClaimed: () => void }) {
+  const { data: unclaimed, loading, reload } = useAsync(() => fetchUnclaimedPlayers(), []);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleClaim = async () => {
+    if (selected.size === 0) return;
+    setClaiming(true);
+    setError(null);
+    try {
+      await claimPlayers(coachId, Array.from(selected).map(asPlayerId));
+      setSelected(new Set());
+      await reload();
+      onClaimed();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add players to roster.');
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  if (loading || !unclaimed || unclaimed.length === 0) return null;
+
+  return (
+    <div className="bg-surface border border-accent-bronze/30 rounded-[6px] overflow-hidden animate-fade-in">
+      <div className="bg-surface-raised/60 border-b border-border px-4 py-2.5 flex items-center gap-2">
+        <UserPlus size={13} className="text-accent-bronze" />
+        <span className="text-12 font-mono text-text-muted uppercase tracking-wider">
+          Unclaimed Players — {unclaimed.length} registered, no coach yet
+        </span>
+      </div>
+      <div className="divide-y divide-border/40">
+        {unclaimed.map((p: UnclaimedPlayer) => (
+          <label key={p.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-surface-raised/30">
+            <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+            <div className="flex flex-col">
+              <span className="text-13 text-text-primary">{p.displayName || p.email.split('@')[0]}</span>
+              <span className="text-11 font-mono text-text-faint">{p.email}</span>
+            </div>
+          </label>
+        ))}
+      </div>
+      <div className="px-4 py-3 flex items-center justify-between gap-3 border-t border-border">
+        {error && <span className="text-11 text-signal-risk">{error}</span>}
+        <button
+          type="button"
+          disabled={selected.size === 0 || claiming}
+          onClick={handleClaim}
+          className="ml-auto px-3 py-1.5 bg-accent-bronze text-ink rounded-[4px] text-12 font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {claiming ? 'Adding…' : selected.size > 0 ? `Add ${selected.size} to Roster` : 'Add to Roster'}
+        </button>
       </div>
     </div>
   );

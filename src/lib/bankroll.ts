@@ -17,6 +17,7 @@
 import { supabase } from './supabase';
 import { Database } from '../types/database';
 import { fetchCurrentPokerWeek } from './sessionContract';
+import { PlayerId } from '../types/ids';
 
 export type CapitalMovementType = Extract<Database['public']['Enums']['ledger_entry_type'], 'DEPOSIT' | 'WITHDRAWAL'>;
 
@@ -28,7 +29,7 @@ export interface CapitalMovement {
   createdAt: string | null;
 }
 
-export async function fetchCurrentBankroll(playerId: string): Promise<number | null> {
+export async function fetchCurrentBankroll(playerId: PlayerId): Promise<number | null> {
   const { data, error } = await supabase
     .from('player_current_bankroll')
     .select('current_bankroll')
@@ -38,7 +39,7 @@ export async function fetchCurrentBankroll(playerId: string): Promise<number | n
   return data?.current_bankroll ?? null;
 }
 
-export async function fetchRecentCapitalMovements(playerId: string, limit = 5): Promise<CapitalMovement[]> {
+export async function fetchRecentCapitalMovements(playerId: PlayerId, limit = 5): Promise<CapitalMovement[]> {
   const { data, error } = await supabase
     .from('bankroll_ledger_entries')
     .select('id, entry_type, amount, note, created_at')
@@ -76,7 +77,7 @@ export async function fetchRecentCapitalMovements(playerId: string, limit = 5): 
 // via the session's locked contract -> weekly_game_plan -> poker_week_id chain,
 // not a raw start_time comparison, so this always agrees with the Weekly
 // Budget Left figure shown alongside it.
-export async function fetchCurrentWeekNetPnl(playerId: string): Promise<number> {
+export async function fetchCurrentWeekNetPnl(playerId: PlayerId): Promise<number> {
   const pokerWeek = await fetchCurrentPokerWeek(playerId);
   if (!pokerWeek) return 0;
 
@@ -111,7 +112,7 @@ export async function fetchCurrentWeekNetPnl(playerId: string): Promise<number> 
 }
 
 export async function recordCapitalMovement(
-  playerId: string,
+  playerId: PlayerId,
   entryType: CapitalMovementType,
   amount: number,
   note?: string
