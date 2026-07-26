@@ -15,9 +15,12 @@
 //
 // Dev: run via `npm run server` (tsx, port API_PORT/8787) alongside
 // `npm run dev` (Vite, proxies /api to this port — see vite.config.ts).
-// `npm run dev:all` runs both together. Prod: `npm run build:server` bundles
-// this into server.js (matches the `clean` script's expected artifact),
-// which also serves the built dist/ static files once present.
+// `npm run dev:all` runs both together. Prod, single-process target (any
+// plain Node host): `npm run build:server` bundles this into server.js
+// (matches the `clean` script's expected artifact), which also serves the
+// built dist/ static files once present. Prod, Vercel: api/index.ts imports
+// the `app` this file exports (see the isMainModule guard below) and runs
+// it as a serverless function — see vercel.json for the static/API split.
 
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: '.env.local' });
@@ -26,7 +29,7 @@ loadEnv(); // also load a plain .env if present; dotenv never overrides an alrea
 import express, { NextFunction, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 
@@ -432,7 +435,18 @@ if (fs.existsSync(distDir)) {
   });
 }
 
-const PORT = Number(process.env.API_PORT) || 8787;
-app.listen(PORT, () => {
-  console.log(`[server] listening on :${PORT}${fs.existsSync(distDir) ? ' (serving dist/)' : ' (API only — run alongside `npm run dev`)'}`);
-});
+// Only bind a port when this file is actually run directly (`tsx server.ts`,
+// or `node server.js` after `npm run build:server`) — not when imported as
+// a module, which is exactly what api/index.ts does to run this same app as
+// a Vercel serverless function. Vercel's Node runtime owns the listening
+// socket itself; calling app.listen() there would be a no-op at best and a
+// port-conflict/cold-start footgun at worst.
+const isMainModule = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  const PORT = Number(process.env.API_PORT) || 8787;
+  app.listen(PORT, () => {
+    console.log(`[server] listening on :${PORT}${fs.existsSync(distDir) ? ' (serving dist/)' : ' (API only — run alongside `npm run dev`)'}`);
+  });
+}
+
+export default app;
