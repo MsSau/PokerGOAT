@@ -170,6 +170,18 @@ export default function WeeklyGamePlanView({ userId }: Props) {
       if (!ctx) return [];
       const named = currentTournaments.filter((t) => t.tournament_name);
       const v = validateWeeklyGamePlan(deriveDays(named), named, ctx);
+      // A row added via "+ Add" but never given a name is silently excluded
+      // from both persistence (handleSaveDraft's own `named` filter) and the
+      // deterministic checks above — without this, that row just vanishes
+      // on lock with no indication anything was dropped.
+      currentTournaments
+        .filter((t) => !t.tournament_name)
+        .forEach((t) => {
+          v.push({
+            field: `unnamed-${t.planned_date}-${t.session}-${t.slot_number}`,
+            message: `${t.planned_date || 'A planned day'}, Session ${t.session}, Table ${t.slot_number} is missing a tournament identifier — name it or remove the row before locking.`,
+          });
+        });
       setIssues(v);
       return v;
     },
