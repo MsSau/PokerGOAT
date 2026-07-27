@@ -284,7 +284,7 @@ export async function replaceCommitments(planId: WeeklyGamePlanId, rows: { commi
  */
 export function validateWeeklyGamePlan(
   days: { planned_date: string; planned_session_allocation: number }[],
-  tournaments: { slot_number: number; intended_buy_ins: number; planned_date: string; session: 1 | 2 }[],
+  tournaments: { slot_number: number; intended_buy_ins: number; planned_date: string; session: 1 | 2; buy_in_amount?: number | null }[],
   ctx: WGPContext,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -347,6 +347,19 @@ export function validateWeeklyGamePlan(
             issues.push({
               field: `tournament-${key}-${i}`,
               message: `${plannedDate} Session ${sessionLabel}, Table ${t.slot_number} exceeds BRM Level ${ctx.brmLevel!.level_index} max of ${rule.maxBuyIns} buy-in(s).`,
+            });
+          }
+          // PRD §3.5: the Weekly Game Plan validates against "tournament
+          // buy-in limits", not just slot/table count — the BRM level's flat
+          // per-tournament ₹ maximum (already enforced downstream at Session
+          // Contract substitution and Tournament logging — see
+          // SessionContractView.tsx / tournaments.ts) was never actually
+          // checked here despite a comment elsewhere assuming it was.
+          const maxAmount = ctx.brmLevel!.max_tournament_buy_in;
+          if (maxAmount !== null && t.buy_in_amount != null && t.buy_in_amount > maxAmount) {
+            issues.push({
+              field: `tournament-amount-${key}-${i}`,
+              message: `${plannedDate} Session ${sessionLabel}, Table ${t.slot_number}'s buy-in of ${t.buy_in_amount} exceeds BRM Level ${ctx.brmLevel!.level_index}'s per-tournament maximum of ${maxAmount}.`,
             });
           }
         });

@@ -140,4 +140,23 @@ describe('validateWeeklyGamePlan', () => {
     );
     expect(issues.some((i) => i.message.includes('exceeds BRM Level'))).toBe(true);
   });
+
+  it('flags a tournament whose buy-in amount exceeds the BRM level\'s per-tournament maximum', () => {
+    // BRM Level 1's max_tournament_buy_in fixture is 5000.
+    const issues = validateWeeklyGamePlan(
+      [],
+      [{ ...VALID_TOURNAMENT, buy_in_amount: 10000 }],
+      validContext(),
+    );
+    expect(issues.some((i) => i.message.includes('per-tournament maximum'))).toBe(true);
+  });
+
+  it('does not flag a tournament whose buy-in amount is within the BRM level\'s per-tournament maximum', () => {
+    const issues = validateWeeklyGamePlan(
+      [],
+      [{ ...VALID_TOURNAMENT, buy_in_amount: 5000 }],
+      validContext(),
+    );
+    expect(issues).toEqual([]);
+  });
 });
