@@ -1,8 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { PlayerRoute, UserRole, ActiveSession } from '../types';
 import { PlayerId, SessionId, asSessionId, asSessionContractId } from '../types/ids';
-import ActiveFrameworkView from './ActiveFrameworkView';
-import ActiveBRMView from './ActiveBRMView';
 import { PlayerDashboard } from './PlayerDashboard';
 import {
   LayoutDashboard,
@@ -17,10 +15,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Bell,
   CheckCircle,
-  ExternalLink,
-  DollarSign
 } from 'lucide-react';
 import WeeklyGamePlanView from './WeeklyGamePlanView';
 import SessionContractView from './SessionContractView';
@@ -48,8 +43,6 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
   // Navigation & UI State
   const [activeTab, setActiveTab] = useState<PlayerRoute>('dashboard');
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
-
-  const [sessionLoading, setSessionLoading] = useState(true);
 
   // Real Coach-Assigned Interventions count for the rail badge (PRD §16).
   // refreshKey bumps after the Interventions tab marks one complete, so the
@@ -101,7 +94,6 @@ useEffect(() => {
 // LOCKED view (no Finalize/+Buy-in) instead of TournamentLog, since
 // PlayerShell picks which one to render off this local status.
 const hydrateSession = useCallback(async (cancelledRef?: { current: boolean }) => {
-  setSessionLoading(true);
   try {
     // ACTIVE session takes priority
     const active = await fetchActiveSession(userId);
@@ -152,8 +144,6 @@ const hydrateSession = useCallback(async (cancelledRef?: { current: boolean }) =
     }
   } catch (err) {
     console.error('Failed to hydrate session state:', err);
-  } finally {
-    if (!cancelledRef?.current) setSessionLoading(false);
   }
 }, [userId]);
 
@@ -203,20 +193,6 @@ const handleGoBackToEdit = async () => {
   await resumeSessionForEditing(session.id);
   setSession((prev) => ({ ...prev, status: 'ACTIVE' }));
 };
-  
-
-  //const handleSessionStarted = (sessionId: string) => {
-    //setSession((prev) => ({...prev, id: sessionId, isActive: true, startTime: new Date().toISOString() }));
-  //};
-
-
-  //const handleStopSession = () => {
-    //setSession((prev) => ({
-      //...prev,
-      //isActive: false,
-      //startTime: null,
-    //}));
-  //};
 
   // Navigation Items
   const navItems = [

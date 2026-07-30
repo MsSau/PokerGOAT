@@ -366,10 +366,6 @@ export async function fetchActiveSession(playerId: PlayerId) {
 
   if (error) throw error;
   return data?.[0] ?? null;
-     // .maybeSingle();
-
-     //if (error) throw error;
-    //return data;
 }
 
 // ============================================================================
