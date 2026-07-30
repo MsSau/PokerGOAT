@@ -7,13 +7,13 @@
 // row per bullet in verdict_evidence_items, populated by endSession.ts.
 
 import { supabase } from './supabase';
-import { Database } from '../types/database';
+import { VerdictClassification } from './verdictEngine';
 import {
   PlayerId, VerdictId, SessionId,
   asVerdictId, asSessionId,
 } from '../types/ids';
 
-export type VerdictClassification = Database['public']['Enums']['verdict_classification'];
+export type { VerdictClassification };
 
 // Mirrors verdict_evidence_items' CHECK constraints exactly (the generated
 // client types this column as plain `string` since Postgres CHECK

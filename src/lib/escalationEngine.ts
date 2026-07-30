@@ -1,12 +1,12 @@
 import { supabase } from './supabase';
-import { Database } from '../types/database';
 import { fetchCurrentPokerWeek } from './sessionContract';
+import { Severity } from './taxonomy';
 import {
   PlayerId, ExecutionActionId, EscalationTrackId,
   asExecutionActionId, asEscalationTrackId,
 } from '../types/ids';
 
-export type Severity = Database['public']['Enums']['severity_type'];
+export type { Severity };
 
 export interface EscalationUpdate {
   execution_action_id: ExecutionActionId;
