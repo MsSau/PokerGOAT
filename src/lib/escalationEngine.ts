@@ -230,7 +230,7 @@ const DEESCALATION_COMPLIANCE_DAYS = 4;
 // this counts discrete poker-day-index crossings rather than dividing
 // elapsed milliseconds by 24h. Matches poker_week_boundary_configs'
 // DEFAULT '10:00:00' when no coach config is resolved.
-export const DEFAULT_POKER_DAY_BOUNDARY_TIME = '10:00:00';
+const DEFAULT_POKER_DAY_BOUNDARY_TIME = '10:00:00';
 
 function boundaryOffsetMs(boundaryTime: string): number {
   const [h, m, s] = boundaryTime.split(':').map(Number);

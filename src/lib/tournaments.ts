@@ -31,7 +31,7 @@ export interface ComplianceFlags {
 
 const actionCache = new Map<string, { id: ExecutionActionId; is_hard_gate: boolean } | null>();
 
-export async function getCanonicalExecutionAction(name: string) {
+async function getCanonicalExecutionAction(name: string) {
   if (actionCache.has(name)) return actionCache.get(name)!;
 
   const { data, error } = await supabase
