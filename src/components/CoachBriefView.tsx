@@ -4,7 +4,8 @@ import { fetchWeeklyCoachBrief } from '../lib/coachBrief';
 import { formatCurrency, medalColorClass } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import ReflectionModal from './ReflectionModal';
-import { PlayerId, CoachId } from '../types/ids';
+import CoachDeepAnalysisViewer from './CoachDeepAnalysisViewer';
+import { PlayerId, CoachId, VerdictId, asVerdictId } from '../types/ids';
 
 interface CoachBriefViewProps {
   playerId: PlayerId;
@@ -39,6 +40,7 @@ export default function CoachBriefView({ playerId, coachId }: CoachBriefViewProp
   const { data: brief, loading, error } = useAsync(() => fetchWeeklyCoachBrief(playerId, coachId), [playerId, coachId]);
   const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
   const [viewingReflection, setViewingReflection] = useState<{ label: string; note: string } | null>(null);
+  const [viewingConversation, setViewingConversation] = useState<{ verdictId: VerdictId; headline: string } | null>(null);
 
   if (loading) {
     return (
@@ -106,6 +108,7 @@ export default function CoachBriefView({ playerId, coachId }: CoachBriefViewProp
                 <th className="p-3">VERDICT</th>
                 <th className="p-3 text-right">P&L</th>
                 <th className="p-3">REFLECTION</th>
+                <th className="p-3">DEEP ANALYSIS</th>
               </tr>
             </thead>
             <tbody className="text-12 font-sans text-text-primary">
@@ -140,6 +143,19 @@ export default function CoachBriefView({ playerId, coachId }: CoachBriefViewProp
                           className="text-accent-steel hover:underline cursor-pointer"
                         >
                           See Reflection
+                        </button>
+                      ) : (
+                        <span className="text-text-faint">—</span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      {verdict?.id ? (
+                        <button
+                          type="button"
+                          onClick={() => setViewingConversation({ verdictId: asVerdictId(verdict.id), headline: verdict.headline })}
+                          className="text-accent-steel hover:underline cursor-pointer"
+                        >
+                          View Conversation
                         </button>
                       ) : (
                         <span className="text-text-faint">—</span>
@@ -233,6 +249,15 @@ export default function CoachBriefView({ playerId, coachId }: CoachBriefViewProp
           sessionLabel={viewingReflection.label}
           reflectionNote={viewingReflection.note}
           onClose={() => setViewingReflection(null)}
+        />
+      )}
+
+      {viewingConversation && (
+        <CoachDeepAnalysisViewer
+          playerId={playerId}
+          verdictId={viewingConversation.verdictId}
+          verdictHeadline={viewingConversation.headline}
+          onClose={() => setViewingConversation(null)}
         />
       )}
     </div>

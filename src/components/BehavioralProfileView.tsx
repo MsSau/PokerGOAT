@@ -10,14 +10,37 @@ import {
   BEHAVIORAL_CATEGORY_LABELS,
 } from '../lib/behavioralProfile';
 import { Dimension, DIMENSION_LABELS } from '../lib/behavioralProfileEngine';
+import { proposeExecutionAction } from '../lib/taxonomy';
+import { resolveCoachId } from '../lib/supabase';
+import { getErrorMessage } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import { PlayerId } from '../types/ids';
+import ProposeActionModal from './ProposeActionModal';
 
 interface BehavioralProfileViewProps {
   userId: PlayerId;
   showRadar?: boolean;
   allowWindowControl?: boolean;
+  // Only the player's own Progress tab can propose an Execution Action for
+  // themselves — CoachShell renders this same component for whichever
+  // player it has selected, where userId is the player being *viewed*, not
+  // the signed-in user, so proposing here would fail RLS's proposed_by =
+  // auth.uid() check (and would be the wrong actor anyway).
+  canPropose?: boolean;
+  onProposed?: () => void;
 }
+
+// The Execution taxonomy only scores these 4 dimensions (see
+// executionEngine.ts's Dimension comment) — Preparation and Outcomes below
+// are scored by separate medal systems and never appear as a proposable
+// Execution Action dimension, even though they're part of this screen's
+// 6-axis radar. Same restricted set as SessionReview.tsx/TaxonomyConfigView.tsx.
+const PROPOSABLE_DIMENSION_TABS: { key: Dimension; label: string }[] = [
+  { key: 'DISCIPLINE_PROCESS', label: 'Discipline/Process' },
+  { key: 'TECHNICAL_PLAY', label: 'Technical' },
+  { key: 'MENTAL_GAME', label: 'Mental' },
+  { key: 'LEARNING_IMPROVEMENT', label: 'Learning' },
+];
 
 const WINDOW_OPTIONS: { value: EvidenceWindow | 'AUTO'; label: string }[] = [
   { value: 'AUTO', label: 'Auto (recommended)' },
@@ -200,16 +223,46 @@ function CategoryPill({ category }: { category: BehavioralCategory }) {
   );
 }
 
-export default function BehavioralProfileView({ userId, showRadar = true, allowWindowControl = false }: BehavioralProfileViewProps) {
+export default function BehavioralProfileView({
+  userId,
+  showRadar = true,
+  allowWindowControl = false,
+  canPropose = false,
+  onProposed,
+}: BehavioralProfileViewProps) {
   const [windowOverride, setWindowOverride] = useState<EvidenceWindow | 'AUTO'>('AUTO');
   const { data: profiles, loading, error } = useAsync(
     () => fetchBehavioralProfile(userId, windowOverride === 'AUTO' ? undefined : windowOverride),
     [userId, windowOverride],
   );
   const [expandedDim, setExpandedDim] = useState<Dimension | null>(null);
+  const [proposeModalOpen, setProposeModalOpen] = useState(false);
+  const [proposeSubmitting, setProposeSubmitting] = useState(false);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const [proposeConfirmation, setProposeConfirmation] = useState<string | null>(null);
 
   const rows = profiles ?? [];
   const category = useMemo(() => computeBehavioralCategory(rows), [rows]);
+
+  const defaultProposeDimension: Dimension =
+    (expandedDim && PROPOSABLE_DIMENSION_TABS.some((t) => t.key === expandedDim) ? expandedDim : null) ??
+    PROPOSABLE_DIMENSION_TABS[0].key;
+
+  async function handleProposeSubmit(fields: { name: string; description: string | null; dimension: Dimension }) {
+    setProposeSubmitting(true);
+    setProposeError(null);
+    try {
+      const coachId = await resolveCoachId(userId, 'PLAYER');
+      await proposeExecutionAction(userId, coachId, fields);
+      setProposeModalOpen(false);
+      setProposeConfirmation("Submitted — pending your coach's approval.");
+      onProposed?.();
+    } catch (err) {
+      setProposeError(getErrorMessage(err));
+    } finally {
+      setProposeSubmitting(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -280,10 +333,39 @@ export default function BehavioralProfileView({ userId, showRadar = true, allowW
         ))}
       </div>
 
+      {canPropose && (
+        <div className="flex justify-end">
+          {!proposeConfirmation ? (
+            <button
+              type="button"
+              onClick={() => { setProposeError(null); setProposeModalOpen(true); }}
+              className="text-12 font-medium text-accent-steel hover:text-accent-steel/80 transition-colors cursor-pointer"
+            >
+              + Propose a new action
+            </button>
+          ) : (
+            <span className="text-12 text-signal-process">{proposeConfirmation}</span>
+          )}
+        </div>
+      )}
+      {proposeError && (
+        <div className="bg-surface-raised border border-signal-risk/30 rounded-[6px] p-3 text-12 text-signal-risk">{proposeError}</div>
+      )}
+
       <p className="text-11 text-text-faint leading-relaxed border-t border-border pt-4">
         Computed from your logged Preparation Medals, Execution dimension ratings, and Outcome Medals.
         Never used to determine Medals, escalation, or interventions — only to show your own trend.
       </p>
+
+      {proposeModalOpen && (
+        <ProposeActionModal
+          dimensionOptions={PROPOSABLE_DIMENSION_TABS}
+          defaultDimension={defaultProposeDimension}
+          submitting={proposeSubmitting}
+          onConfirm={handleProposeSubmit}
+          onCancel={() => setProposeModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

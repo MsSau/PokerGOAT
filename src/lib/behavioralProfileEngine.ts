@@ -14,9 +14,9 @@
 // per-dimension state/trend/confidence/radar index used by the six-axis
 // radar (§2.12).
 
-import { Database } from '../types/database';
+import { Dimension } from './executionEngine';
 
-export type Dimension = Database['public']['Enums']['dimension_type'];
+export type { Dimension };
 
 // Fixed order per §2.12 — "always the same clock position per axis."
 export const BEHAVIORAL_PROFILE_DIMENSIONS: Dimension[] = [

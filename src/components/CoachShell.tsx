@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CoachRoute, UserRole } from '../types';
+import { CoachRoute } from '../types';
 import FrameworkConfigView from './FrameworkConfigView';
 import BRMConfigView from './BRMConfigView';
 import TaxonomyConfigView from './TaxonomyConfigView';
@@ -34,31 +34,17 @@ interface CoachShellProps {
   userId: PlayerId;
   userEmail: string;
   onLogout: () => void;
-  onSwitchRole: (role: UserRole) => void;
 }
 
-export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }: CoachShellProps) {
+export default function CoachShell({ userId, userEmail, onLogout }: CoachShellProps) {
   // Navigation & UI State
   const [activeTab, setActiveTab] = useState<CoachRoute>('brief'); // Defaults to 'brief'!
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // userId is NOT reliably a real coach's id: the "Switch to Coach Shell"
-  // sandbox control (App.tsx's pokergoat_role_override, PRD-intentional dev
-  // affordance) can render this shell for a user whose actual profiles.role
-  // is PLAYER — in that case the real coach is that player's own coach_id,
-  // not userId itself. Resolve from the DB rather than assuming.
-  const { data: coachId } = useAsync(async () => {
-    const { data: profile, error } = await supabase.from('profiles').select('role, coach_id').eq('id', userId).single();
-    if (error) throw error;
-    return profile.role === 'COACH' ? asCoachId(userId) : profile.coach_id ? asCoachId(profile.coach_id) : null;
-  }, [userId]);
+  const coachId = asCoachId(userId);
 
-  // Looked up by coachId directly (not userId) so this is right in both
-  // cases above — the real coach's own profile, not the sandbox-override
-  // player's.
   const { data: coachName } = useAsync(async () => {
-    if (!coachId) return null;
     const { data, error } = await supabase.from('profiles').select('display_name').eq('id', coachId).single();
     if (error) throw error;
     return data.display_name;
@@ -196,22 +182,6 @@ export default function CoachShell({ userId, userEmail, onLogout, onSwitchRole }
                 </div>
               )}
             </div>
-
-            {/* Quick switcher to Player Shell for testing */}
-            {!isRailCollapsed && (
-              <div className="px-1.5 py-1 bg-surface-raised/40 rounded border border-border/40 text-[10px] flex flex-col gap-1 text-text-muted">
-                <span className="font-mono text-[9px] uppercase tracking-wide text-text-faint">
-                  Sandbox Controls
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onSwitchRole('PLAYER')}
-                  className="w-full text-center py-1 rounded bg-accent-bronze/10 border border-accent-bronze/30 text-accent-bronze hover:bg-accent-bronze/20 font-sans transition-colors"
-                >
-                  Switch to Player Shell
-                </button>
-              </div>
-            )}
 
             {/* Logout Button */}
             <button

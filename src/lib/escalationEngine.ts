@@ -1,12 +1,12 @@
 import { supabase } from './supabase';
-import { Database } from '../types/database';
 import { fetchCurrentPokerWeek } from './sessionContract';
+import { Severity } from './taxonomy';
 import {
   PlayerId, ExecutionActionId, EscalationTrackId,
   asExecutionActionId, asEscalationTrackId,
 } from '../types/ids';
 
-export type Severity = Database['public']['Enums']['severity_type'];
+export type { Severity };
 
 export interface EscalationUpdate {
   execution_action_id: ExecutionActionId;
@@ -230,7 +230,7 @@ const DEESCALATION_COMPLIANCE_DAYS = 4;
 // this counts discrete poker-day-index crossings rather than dividing
 // elapsed milliseconds by 24h. Matches poker_week_boundary_configs'
 // DEFAULT '10:00:00' when no coach config is resolved.
-export const DEFAULT_POKER_DAY_BOUNDARY_TIME = '10:00:00';
+const DEFAULT_POKER_DAY_BOUNDARY_TIME = '10:00:00';
 
 function boundaryOffsetMs(boundaryTime: string): number {
   const [h, m, s] = boundaryTime.split(':').map(Number);

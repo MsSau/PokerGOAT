@@ -1,18 +1,22 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { CheckCircle2, ChevronRight, Mic, MicOff, Type } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { supabase, resolveCoachId } from '../lib/supabase';
 import { fetchSessionTournaments, TournamentRow } from '../lib/tournaments';
 import { endSession, EndSessionResult, TournamentFinish, MistakeTagInput } from '../lib/endSession';
+import { proposeExecutionAction } from '../lib/taxonomy';
+import { Dimension } from '../lib/executionEngine';
 import { useAsync } from '../lib/useAsync';
 import { getErrorMessage, medalColorClass } from '../lib/utils';
 import { MinimalSpeechRecognition, getSpeechRecognitionCtor } from '../lib/speechRecognition';
 import { SessionId, PlayerId, asTournamentId, asExecutionActionId } from '../types/ids';
+import ProposeActionModal from './ProposeActionModal';
 
 interface Props {
   sessionId: SessionId;
   playerId: PlayerId;
   onComplete: (result: EndSessionResult) => void;
   onGoBackToEdit: () => Promise<void>;
+  onProposed?: () => void;
 }
 
 type Step = 'confirm-entries' | 'finalize' | 'mistakes' | 'reflection' | 'submitting' | 'done';
@@ -37,23 +41,43 @@ function isSystemOnlyDetection(method: string | null): boolean {
   return method.toUpperCase().replace(/[^A-Z]/g, '').startsWith('SYSTEM');
 }
 
-const DIMENSION_TABS = [
+const DIMENSION_TABS: { key: Dimension; label: string }[] = [
   { key: 'DISCIPLINE_PROCESS', label: 'Discipline/Process' },
   { key: 'TECHNICAL_PLAY', label: 'Technical' },
   { key: 'MENTAL_GAME', label: 'Mental' },
   { key: 'LEARNING_IMPROVEMENT', label: 'Learning' },
 ];
 
-export default function SessionReview({ sessionId, playerId, onComplete, onGoBackToEdit }: Props) {
+export default function SessionReview({ sessionId, playerId, onComplete, onGoBackToEdit, onProposed }: Props) {
   const [step, setStep] = useState<Step>('confirm-entries');
   const [finishes, setFinishes] = useState<Record<string, Partial<TournamentFinish>>>({});
-  const [activeTab, setActiveTab] = useState(DIMENSION_TABS[0].key);
+  const [activeTab, setActiveTab] = useState<Dimension>(DIMENSION_TABS[0].key);
   const [selectedTags, setSelectedTags] = useState<Record<string, { actionId: string; tournamentId?: string }>>({});
   const [bustedIds, setBustedIds] = useState<Set<string>>(new Set());
   const [reflection, setReflection] = useState('');
   const [listening, setListening] = useState(false);
   const [result, setResult] = useState<EndSessionResult | null>(null);
   const [goingBack, setGoingBack] = useState(false);
+  const [proposeModalOpen, setProposeModalOpen] = useState(false);
+  const [proposeSubmitting, setProposeSubmitting] = useState(false);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const [proposeConfirmation, setProposeConfirmation] = useState<string | null>(null);
+
+  async function handleProposeSubmit(fields: { name: string; description: string | null; dimension: Dimension }) {
+    setProposeSubmitting(true);
+    setProposeError(null);
+    try {
+      const coachId = await resolveCoachId(playerId, 'PLAYER');
+      await proposeExecutionAction(playerId, coachId, fields);
+      setProposeModalOpen(false);
+      setProposeConfirmation("Submitted — pending your coach's approval.");
+      onProposed?.();
+    } catch (err) {
+      setProposeError(getErrorMessage(err));
+    } finally {
+      setProposeSubmitting(false);
+    }
+  }
 
   const recognitionRef = useRef<MinimalSpeechRecognition | null>(null);
   const speechSupported = typeof window !== 'undefined' && !!getSpeechRecognitionCtor();
@@ -292,12 +316,38 @@ export default function SessionReview({ sessionId, playerId, onComplete, onGoBac
               );
             })}
           </div>
-          <span className="text-12 text-text-muted">{Object.keys(selectedTags).length} selected</span>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-12 text-text-muted">{Object.keys(selectedTags).length} selected</span>
+            {!proposeConfirmation ? (
+              <button
+                type="button"
+                onClick={() => { setProposeError(null); setProposeModalOpen(true); }}
+                className="text-12 font-medium text-accent-steel hover:text-accent-steel/80 transition-colors cursor-pointer"
+              >
+                + Propose a new action
+              </button>
+            ) : (
+              <span className="text-12 text-signal-process">{proposeConfirmation}</span>
+            )}
+          </div>
           <button type="button" onClick={() => setStep('reflection')}
             className="self-end h-10 px-5 bg-accent-steel text-text-primary rounded-[4px] text-14 font-medium flex items-center gap-1">
             Next <ChevronRight size={14} />
           </button>
         </div>
+      )}
+
+      {proposeModalOpen && (
+        <ProposeActionModal
+          dimensionOptions={DIMENSION_TABS}
+          defaultDimension={activeTab}
+          submitting={proposeSubmitting}
+          onConfirm={handleProposeSubmit}
+          onCancel={() => setProposeModalOpen(false)}
+        />
+      )}
+      {proposeError && (
+        <div className="bg-surface-raised border border-signal-risk/30 rounded-[6px] p-3 text-12 text-signal-risk">{proposeError}</div>
       )}
 
       {step === 'reflection' && (

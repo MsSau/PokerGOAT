@@ -19,7 +19,7 @@ import { supabase } from './supabase';
 import { ExecutionTaxonomy, TaxonomyVersion, ExecutionAction } from '../types';
 import { Dimension } from './executionEngine';
 import { Database } from '../types/database';
-import { CoachId, TaxonomyVersionId, ExecutionActionId } from '../types/ids';
+import { CoachId, PlayerId, TaxonomyVersionId, ExecutionActionId } from '../types/ids';
 
 export type Severity = Database['public']['Enums']['severity_type'];
 
@@ -170,4 +170,54 @@ export async function approveProposedAction(
 export async function rejectProposedAction(actionId: ExecutionActionId): Promise<void> {
   const { error } = await supabase.from('execution_actions').update({ status: 'INACTIVE' }).eq('id', actionId);
   if (error) throw error;
+}
+
+export interface ProposeActionFields {
+  name: string;
+  description: string | null;
+  dimension: Dimension;
+}
+
+// Player-side counterpart to createCanonicalAction (PRD §3.3): the player
+// may propose a custom Execution Action, but never its scoring-relevant
+// fields (base severity, hard-gate status, detection logic) — those are
+// neutral placeholders here, fully overwritten by the coach on approval
+// (approveProposedAction requires setting them explicitly). RLS enforces
+// the same constraint server-side: "Players propose actions" only allows
+// INSERT where status = PLAYER_PROPOSED and proposed_by = auth.uid().
+export async function proposeExecutionAction(
+  playerId: PlayerId,
+  coachId: CoachId,
+  fields: ProposeActionFields,
+): Promise<ExecutionAction> {
+  const { version } = await fetchOrCreateTaxonomy(coachId);
+
+  const { data, error } = await supabase
+    .from('execution_actions')
+    .insert({
+      name: fields.name,
+      dimension: fields.dimension,
+      description: fields.description,
+      taxonomy_version_id: version.id,
+      status: 'PLAYER_PROPOSED',
+      proposed_by: playerId,
+      base_severity: 'MINOR',
+      is_hard_gate: false,
+      detection_method: 'Player-tagged',
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Rail badge count (PRD:798) — this player's own proposals still awaiting coach review. */
+export async function countPendingProposedActions(playerId: PlayerId): Promise<number> {
+  const { count, error } = await supabase
+    .from('execution_actions')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'PLAYER_PROPOSED')
+    .eq('proposed_by', playerId);
+  if (error) throw error;
+  return count ?? 0;
 }

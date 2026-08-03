@@ -103,7 +103,7 @@ export async function createPreparationRecord(
   return data;
 }
 
-export async function fetchLatestPreparationRecord(playerId: PlayerId): Promise<PreparationRecordRow | null> {
+async function fetchLatestPreparationRecord(playerId: PlayerId): Promise<PreparationRecordRow | null> {
   const { data, error } = await supabase
     .from('preparation_records')
     .select('*')

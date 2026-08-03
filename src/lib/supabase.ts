@@ -238,7 +238,7 @@ export async function getActiveBRM(coachId: CoachId): Promise<{
   }
 }
 
-export async function fetchPokerWeekBoundaryConfig(coachId: CoachId) {
+async function fetchPokerWeekBoundaryConfig(coachId: CoachId) {
   const { data, error } = await supabase
     .from('poker_week_boundary_configs')
     .select('*')
@@ -366,10 +366,6 @@ export async function fetchActiveSession(playerId: PlayerId) {
 
   if (error) throw error;
   return data?.[0] ?? null;
-     // .maybeSingle();
-
-     //if (error) throw error;
-    //return data;
 }
 
 // ============================================================================
