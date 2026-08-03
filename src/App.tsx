@@ -103,18 +103,6 @@ export default function App() {
       console.error('Error during sign out:', err);
     }
     setSession(null);
-    localStorage.removeItem('pokergoat_role_override');
-  };
-
-  const handleSwitchRole = (newRole: UserRole) => {
-    if (session) {
-      // Set an override in localStorage so reloading preserves the toggled role
-      localStorage.setItem('pokergoat_role_override', newRole);
-      setSession({
-        ...session,
-        role: newRole,
-      });
-    }
   };
 
   const handleAuthSuccess = (newSession: { userId: PlayerId; email: string; role: UserRole }) => {
@@ -148,7 +136,6 @@ export default function App() {
         userId={session.userId}
         userEmail={session.email}
         onLogout={handleLogout}
-        onSwitchRole={handleSwitchRole}
       />
     );
   }
@@ -195,7 +182,6 @@ export default function App() {
       userId={session.userId}
       userEmail={session.email}
       onLogout={handleLogout}
-      onSwitchRole={handleSwitchRole}
     />
   );
 }

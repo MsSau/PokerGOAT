@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { PlayerRoute, UserRole, ActiveSession } from '../types';
+import { PlayerRoute, ActiveSession } from '../types';
 import { PlayerId, SessionId, asSessionId, asSessionContractId } from '../types/ids';
 import { PlayerDashboard } from './PlayerDashboard';
 import {
@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CheckCircle,
+  Lightbulb,
 } from 'lucide-react';
 import WeeklyGamePlanView from './WeeklyGamePlanView';
 import SessionContractView from './SessionContractView';
@@ -29,6 +30,7 @@ import BehavioralProfileView from './BehavioralProfileView';
 import VerdictsView from './VerdictsView';
 import PlayerInterventionsView from './PlayerInterventionsView';
 import { countActiveAssignmentsForPlayer } from '../lib/interventions';
+import { countPendingProposedActions } from '../lib/taxonomy';
 import { useAsync } from '../lib/useAsync';
 
 
@@ -36,10 +38,9 @@ interface PlayerShellProps {
   userId: PlayerId;
   userEmail: string;
   onLogout: () => void;
-  onSwitchRole: (role: UserRole) => void;
 }
 
-export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole }: PlayerShellProps) {
+export default function PlayerShell({ userId, userEmail, onLogout }: PlayerShellProps) {
   // Navigation & UI State
   const [activeTab, setActiveTab] = useState<PlayerRoute>('dashboard');
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
@@ -53,6 +54,16 @@ export default function PlayerShell({ userId, userEmail, onLogout, onSwitchRole 
     [userId, interventionRefreshKey],
   );
   const hasIntervention = (activeInterventionCount ?? 0) > 0;
+
+  // Pending Execution Action proposal count for the rail badge (PRD:798).
+  // proposalRefreshKey bumps after SessionReview's propose flow submits,
+  // same pattern as interventionRefreshKey above.
+  const [proposalRefreshKey, setProposalRefreshKey] = useState(0);
+  const { data: pendingProposalCount } = useAsync(
+    () => countPendingProposedActions(userId),
+    [userId, proposalRefreshKey],
+  );
+  const hasPendingProposal = (pendingProposalCount ?? 0) > 0;
 
   // Active Session state
 const [session, setSession] = useState<ActiveSession>({
@@ -313,6 +324,30 @@ const handleGoBackToEdit = async () => {
             </button>
           )}
 
+          {/* Proposed Execution Action(s) pending coach review — informational, not an alert */}
+          {hasPendingProposal && (
+            <div
+              className={`flex items-center rounded-[4px] p-2 bg-accent-steel/5 border border-accent-steel/20 ${
+                isRailCollapsed ? 'justify-center' : 'justify-between'
+              }`}
+              title="Proposed Execution Action(s) awaiting your coach's review"
+            >
+              <div className="flex items-center gap-2">
+                <Lightbulb size={16} className="text-accent-steel shrink-0" />
+                {!isRailCollapsed && (
+                  <span className="text-12 font-medium text-accent-steel">
+                    Proposal Pending
+                  </span>
+                )}
+              </div>
+              {!isRailCollapsed && (
+                <span className="bg-accent-steel text-text-primary font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[999px]">
+                  {pendingProposalCount}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Account & Session Controls */}
           <div className="border-t border-border/60 pt-2 flex flex-col gap-1.5">
             {/* Account Display */}
@@ -331,22 +366,6 @@ const handleGoBackToEdit = async () => {
                 </div>
               )}
             </div>
-
-            {/* Simulated Toggle Helpers */}
-            {!isRailCollapsed && (
-              <div className="px-1.5 py-1 bg-surface-raised/40 rounded border border-border/40 text-[10px] flex flex-col gap-1 text-text-muted">
-                <span className="font-mono text-[9px] uppercase tracking-wide text-text-faint">
-                  Sandbox Controls
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onSwitchRole('COACH')}
-                  className="w-full text-center mt-1 py-1 rounded bg-accent-steel/10 border border-accent-steel/30 text-accent-steel hover:bg-accent-steel/20 font-sans transition-colors"
-                >
-                  Switch to Coach Shell
-                </button>
-              </div>
-            )}
 
             {/* Logout Button */}
             <button
@@ -435,7 +454,13 @@ const handleGoBackToEdit = async () => {
                   <TournamentLog sessionId={session.id} onEndSession={handleEndSessionClicked} />
                 )}
                 {session.status === 'REVIEW_PENDING' && session.id && (
-                  <SessionReview sessionId={session.id} playerId={userId} onComplete={handleReviewComplete} onGoBackToEdit={handleGoBackToEdit} />
+                  <SessionReview
+                    sessionId={session.id}
+                    playerId={userId}
+                    onComplete={handleReviewComplete}
+                    onGoBackToEdit={handleGoBackToEdit}
+                    onProposed={() => setProposalRefreshKey((k) => k + 1)}
+                  />
                 )}
                 {(session.status === 'NONE' || session.status === 'FINALIZED') && (
                   <SessionContractView
@@ -449,7 +474,13 @@ const handleGoBackToEdit = async () => {
 
             {activeTab === 'log' && <SessionLog userId={userId} />}
 
-            {activeTab === 'progress' && <BehavioralProfileView userId={userId} />}
+            {activeTab === 'progress' && (
+              <BehavioralProfileView
+                userId={userId}
+                canPropose
+                onProposed={() => setProposalRefreshKey((k) => k + 1)}
+              />
+            )}
 
             {activeTab === 'verdicts' && <VerdictsView userId={userId} />}
 

@@ -76,7 +76,7 @@ Local dev needs both `npm run dev` (frontend, :3000) and `npm run server` (this 
 
 ### Frontend shape
 
-No router — `App.tsx` owns auth state and does a hard role-based render: `AuthScreen` (unauthenticated) → `CoachShell` or `PlayerShell` based on `profiles.role`. Each shell owns its own tab-based navigation (`PlayerRoute` / `CoachRoute` unions in `src/types.ts`) and left-rail layout rather than URL routes. A `pokergoat_role_override` localStorage value lets a logged-in user flip lens between PLAYER/COACH for dev/demo purposes — this is intentional, not a bug.
+No router — `App.tsx` owns auth state and does a hard role-based render: `AuthScreen` (unauthenticated) → `CoachShell` or `PlayerShell` based on `profiles.role`. Each shell owns its own tab-based navigation (`PlayerRoute` / `CoachRoute` unions in `src/types.ts`) and left-rail layout rather than URL routes.
 
 Styling is Tailwind v4 (`@theme` inline in `src/index.css`) with a fixed dark, single-theme design-token set (`--ink`, `--surface`, `--accent-bronze` for medals, `--signal-risk`/`--signal-process`/`--signal-caution` for process state). The one hard design rule worth knowing before touching any component: **money and medals never share a color channel** — P&L/bankroll figures always render in neutral `--text-primary` regardless of sign; `--signal-risk`/`--signal-process` describe process/behavioral state only, never financial outcome. Full design-token and screen-by-screen spec is in PRD §21 ("UI Instructions").
 
