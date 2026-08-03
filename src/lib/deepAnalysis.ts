@@ -90,6 +90,25 @@ export async function fetchOrCreateThreadForVerdict(playerId: PlayerId, coachId:
   return asDeepAnalysisThreadId(created.id);
 }
 
+/**
+ * Read-only lookup for the coach-side viewer — unlike fetchOrCreateThreadForVerdict,
+ * this never creates a thread. A coach opening a session that the player
+ * never used "Go Deeper" on should see "no conversation yet", not silently
+ * create an empty thread just by looking.
+ */
+export async function fetchThreadForVerdict(playerId: PlayerId, verdictId: VerdictId): Promise<DeepAnalysisThreadId | null> {
+  const { data, error } = await supabase
+    .from('deep_analysis_threads')
+    .select('id')
+    .eq('player_id', playerId)
+    .eq('verdict_id', verdictId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? asDeepAnalysisThreadId(data.id) : null;
+}
+
 export async function fetchThreadMessages(threadId: DeepAnalysisThreadId): Promise<DeepAnalysisMessage[]> {
   const { data, error } = await supabase
     .from('deep_analysis_messages')

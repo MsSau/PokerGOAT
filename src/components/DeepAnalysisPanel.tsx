@@ -33,7 +33,66 @@ interface Props {
 
 const DISCLOSURE_KEY = 'pokergoat_deep_analysis_disclosed';
 
-function MessageBubble({ message }: { message: DeepAnalysisMessage }) {
+// Renders inline `**bold**` spans within a single line of text — the only
+// inline markup the AI is asked to use (see DEEP_ANALYSIS_SYSTEM_INSTRUCTION
+// in server.ts).
+function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    const match = part.match(/^\*\*([^*]+)\*\*$/);
+    return match ? <strong key={`${keyPrefix}-${i}`}>{match[1]}</strong> : <React.Fragment key={`${keyPrefix}-${i}`}>{part}</React.Fragment>;
+  });
+}
+
+const BULLET_RE = /^[-*•]\s+/;
+const NUMBERED_RE = /^\d+[.)]\s+/;
+
+// Plain `whitespace-pre-wrap` alone leaves numbered/bulleted steps — the
+// exact shape the Deep Analysis prompt now asks for when giving actionable
+// advice — visually indistinguishable from a single run-on paragraph. This
+// groups consecutive blank-line-separated lines into real <p>/<ul>/<ol>
+// blocks instead, without pulling in a full markdown dependency for what is
+// deliberately a narrow, model-controlled output shape.
+function FormattedMessage({ content }: { content: string }) {
+  const blocks = content.trim().split(/\n\s*\n/);
+  return (
+    <div className="flex flex-col gap-2.5">
+      {blocks.map((block, blockIdx) => {
+        const lines = block.split('\n').filter((l) => l.trim().length > 0);
+        if (lines.length > 0 && lines.every((l) => BULLET_RE.test(l))) {
+          return (
+            <ul key={blockIdx} className="list-disc pl-4 flex flex-col gap-1">
+              {lines.map((l, i) => (
+                <li key={i}>{renderInline(l.replace(BULLET_RE, ''), `${blockIdx}-${i}`)}</li>
+              ))}
+            </ul>
+          );
+        }
+        if (lines.length > 0 && lines.every((l) => NUMBERED_RE.test(l))) {
+          return (
+            <ol key={blockIdx} className="list-decimal pl-4 flex flex-col gap-1">
+              {lines.map((l, i) => (
+                <li key={i}>{renderInline(l.replace(NUMBERED_RE, ''), `${blockIdx}-${i}`)}</li>
+              ))}
+            </ol>
+          );
+        }
+        return (
+          <p key={blockIdx}>
+            {lines.map((l, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && <br />}
+                {renderInline(l, `${blockIdx}-${i}`)}
+              </React.Fragment>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+export function MessageBubble({ message }: { message: DeepAnalysisMessage }) {
   const isPlayer = message.senderType === 'PLAYER';
   return (
     <div className={`flex ${isPlayer ? 'justify-end' : 'justify-start'}`}>
@@ -42,7 +101,7 @@ function MessageBubble({ message }: { message: DeepAnalysisMessage }) {
           isPlayer ? 'bg-accent-bronze/15 border border-accent-bronze/30 text-text-primary' : 'bg-surface-raised border border-border text-text-primary'
         }`}
       >
-        {message.content}
+        {isPlayer ? <p className="whitespace-pre-wrap">{message.content}</p> : <FormattedMessage content={message.content} />}
         {message.createdAt && (
           <div className="text-[10px] font-mono text-text-faint mt-1">
             {new Date(message.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
@@ -157,7 +216,7 @@ export default function DeepAnalysisPanel({ playerId, coachId, verdict, onClose 
 
   return (
     <div className="fixed inset-0 z-50 bg-ink/70 backdrop-blur-sm flex justify-end" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md h-full bg-surface border-l border-border flex flex-col animate-fade-in">
+      <div className="w-full max-w-2xl h-full bg-surface border-l border-border flex flex-col animate-fade-in">
         {/* Header */}
         <div className="h-16 border-b border-border px-5 flex items-center justify-between shrink-0">
           <div className="flex flex-col">
