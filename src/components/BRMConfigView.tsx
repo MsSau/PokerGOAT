@@ -9,7 +9,7 @@
 // PRD-specified "bankroll bands render as an editable table" spreadsheet.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { DollarSign, FileEdit, History, Lock, ShieldCheck, ShieldAlert, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
+import { DollarSign, FileEdit, History, Lock, ShieldCheck, ShieldAlert, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import {
   fetchBRMConfigForCoach,
   fetchBRMVersions,
@@ -308,6 +308,12 @@ export default function BRMConfigView({ coachId }: Props) {
   const [expandedVersionId, setExpandedVersionId] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Record<string, BRMLevelRow[]>>({});
   const [expandedSlotLevel, setExpandedSlotLevel] = useState<number | null>(null);
+  // Levels 1-8's spreadsheet needs real width (7 numeric columns + table
+  // rules) and otherwise fights the fixed w-1/3 list column for space even
+  // though that column only ever shows a single static summary card (this
+  // screen has one BRM config per coach, never a browsable list) — collapse
+  // it to reclaim that width, same interaction as the shell rails.
+  const [listCollapsed, setListCollapsed] = useState(false);
 
   const active = useMemo(() => currentBRMVersion(versions), [versions]);
 
@@ -424,33 +430,43 @@ export default function BRMConfigView({ coachId }: Props) {
       <PlayerFinancialReview coachId={coachId} />
 
       <div className="bg-surface border border-border rounded-[6px] flex overflow-hidden animate-fade-in font-sans min-h-[560px]">
-      {/* LIST — left third (singleton config, mirrors FrameworkConfigView's shape) */}
-      <div className="w-1/3 border-r border-border flex flex-col">
-        <div className="p-4 border-b border-border">
-          <span className="text-12 font-mono text-text-muted uppercase tracking-wider">BRM Configuration</span>
+      {/* LIST — left third (singleton config, mirrors FrameworkConfigView's shape); collapsible so the Levels table can claim the width instead */}
+      <div className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${listCollapsed ? 'w-10' : 'w-1/3'}`}>
+        <div className={`p-4 border-b border-border flex items-center ${listCollapsed ? 'justify-center' : 'justify-between'} gap-2`}>
+          {!listCollapsed && <span className="text-12 font-mono text-text-muted uppercase tracking-wider">BRM Configuration</span>}
+          <button
+            type="button"
+            onClick={() => setListCollapsed((v) => !v)}
+            className="p-1 rounded bg-surface-raised border border-border text-text-muted hover:text-text-primary transition-colors cursor-pointer shrink-0"
+            title={listCollapsed ? 'Expand BRM Configuration panel' : 'Collapse BRM Configuration panel'}
+          >
+            {listCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
-          {configLoading && <div className="p-4 text-12 text-text-muted">Loading BRM configuration...</div>}
-          {configError && <div className="p-4 text-12 text-signal-risk">{configError}</div>}
-          {!configLoading && !configError && !hasConfig && (
-            <div className="p-4 text-12 text-text-faint italic">No BRM configuration yet. Review the default bands on the right and create one.</div>
-          )}
-          {!configLoading && hasConfig && (
-            <div className="p-4 border-l-[3px] border-accent-bronze bg-surface-raised flex flex-col gap-1.5">
-              <div className="flex items-center gap-2">
-                <DollarSign size={14} className="text-accent-bronze" />
-                <span className="text-13 font-semibold text-text-primary">Bankroll &amp; Stop Loss</span>
+        {!listCollapsed && (
+          <div className="flex-1 overflow-y-auto">
+            {configLoading && <div className="p-4 text-12 text-text-muted">Loading BRM configuration...</div>}
+            {configError && <div className="p-4 text-12 text-signal-risk">{configError}</div>}
+            {!configLoading && !configError && !hasConfig && (
+              <div className="p-4 text-12 text-text-faint italic">No BRM configuration yet. Review the default bands on the right and create one.</div>
+            )}
+            {!configLoading && hasConfig && (
+              <div className="p-4 border-l-[3px] border-accent-bronze bg-surface-raised flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <DollarSign size={14} className="text-accent-bronze" />
+                  <span className="text-13 font-semibold text-text-primary">Bankroll &amp; Stop Loss</span>
+                </div>
+                <span className="text-11 font-mono text-text-faint">
+                  {versionsLoading ? 'Loading versions...' : `v${active?.version_number ?? '—'} active · ${versions.length} version(s)`}
+                </span>
               </div>
-              <span className="text-11 font-mono text-text-faint">
-                {versionsLoading ? 'Loading versions...' : `v${active?.version_number ?? '—'} active · ${versions.length} version(s)`}
-              </span>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* DETAIL — right two-thirds */}
-      <div className="w-2/3 flex flex-col">
+      {/* DETAIL — right two-thirds (flex-1 once the list column collapses) */}
+      <div className={`flex flex-col min-w-0 ${listCollapsed ? 'flex-1' : 'w-2/3'}`}>
         {hasConfig && (
           <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4">
             <span className="text-14 font-semibold text-text-primary">Levels 1–8</span>
