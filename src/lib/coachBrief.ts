@@ -119,7 +119,7 @@ async function fetchCriticalAlerts(playerId: PlayerId): Promise<CriticalAlertRow
   });
 }
 
-async function fetchRepeatOffences(playerId: PlayerId): Promise<RepeatOffenceRow[]> {
+export async function fetchRepeatOffences(playerId: PlayerId): Promise<RepeatOffenceRow[]> {
   const { data: tracks, error } = await supabase
     .from('escalation_tracks')
     .select('id, current_stage_index, last_occurrence_at, execution_actions(name)')

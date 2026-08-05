@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Award, Eye, EyeOff } from 'lucide-react';
+import { Award, Eye, EyeOff, ArrowUp, ArrowRight, ArrowDown } from 'lucide-react';
 import { fetchPlayerDashboardData } from '../lib/supabase';
 import { fetchCurrentBankroll, fetchCurrentWeekNetPnl, fetchRecentCapitalMovements, recordCapitalMovement, CapitalMovementType } from '../lib/bankroll';
+import { fetchRepeatOffences } from '../lib/coachBrief';
 import { formatCurrency, medalColorClass, getErrorMessage } from '../lib/utils';
 import { useAsync } from '../lib/useAsync';
 import CapitalMovementModal from './CapitalMovementModal';
@@ -36,6 +37,12 @@ export function PlayerDashboard({ userId, onStartPreparation }: { userId: Player
     () => fetchCurrentWeekNetPnl(userId),
     [userId]
   );
+
+  // Same track data as the coach's Weekly Coach Brief "Repeat-Offence
+  // Tracker" (CoachBriefView.tsx) — fetchRepeatOffences only needs
+  // playerId, so it's reused as-is rather than duplicated.
+  const { data: repeatOffences } = useAsync(() => fetchRepeatOffences(userId), [userId]);
+  const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
 
   // Hidden by default — PRD §2.1 explicitly warns against showing
   // cumulative bankroll prominently on login ("invites outcome-first
@@ -163,7 +170,44 @@ export function PlayerDashboard({ userId, onStartPreparation }: { userId: Player
         Start Preparation
       </button>
 
-      {/* 4. Session History */}
+      {/* 4. Repeat-Offence Tracker — same escalation-ladder data the coach
+          sees on the Weekly Coach Brief, surfaced directly to the player. */}
+      {repeatOffences && repeatOffences.length > 0 && (
+        <div>
+          <h2 className="text-14 font-semibold text-text-primary mb-4">Repeat-Offence Tracker</h2>
+          <div className="border border-border rounded bg-surface-raised px-4">
+            {repeatOffences.map((o) => {
+              const Icon = o.trend === 'IMPROVING' ? ArrowUp : o.trend === 'WORSENING' ? ArrowDown : ArrowRight;
+              const colorClass = o.trend === 'IMPROVING' ? 'text-signal-process' : o.trend === 'WORSENING' ? 'text-signal-risk' : 'text-text-muted';
+              const expanded = expandedTrackId === o.trackId;
+              return (
+                <div key={o.trackId} className="border-b border-border/50 last:border-b-0">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTrackId((cur) => (cur === o.trackId ? null : o.trackId))}
+                    className="w-full flex items-center justify-between py-2.5 text-left cursor-pointer"
+                  >
+                    <span className="text-13 text-text-primary">{o.actionName}</span>
+                    <span className="flex items-center gap-3 text-13 font-mono">
+                      <span className="text-text-muted">Stage {o.stage}</span>
+                      <span className={`flex items-center gap-1 ${colorClass}`}>
+                        <Icon size={13} /> {o.trend}
+                      </span>
+                    </span>
+                  </button>
+                  {expanded && (
+                    <p className="text-11 text-text-faint pb-2.5">
+                      Last occurrence: {o.lastOccurrenceAt ? new Date(o.lastOccurrenceAt).toLocaleString() : 'unknown'}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 5. Session History */}
       <div>
         <h2 className="text-14 font-semibold text-text-primary mb-4">Session History</h2>
         {sessions.length === 0 ? (

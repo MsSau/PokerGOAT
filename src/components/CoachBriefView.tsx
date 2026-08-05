@@ -179,31 +179,30 @@ export default function CoachBriefView({ playerId, coachId }: CoachBriefViewProp
             {brief.repeatOffences.map((o) => {
               const Icon = o.trend === 'IMPROVING' ? ArrowUp : o.trend === 'WORSENING' ? ArrowDown : ArrowRight;
               const colorClass = o.trend === 'IMPROVING' ? 'text-signal-process' : o.trend === 'WORSENING' ? 'text-signal-risk' : 'text-text-muted';
+              const expanded = expandedTrackId === o.trackId;
               return (
-                <button
-                  key={o.trackId}
-                  type="button"
-                  onClick={() => setExpandedTrackId((cur) => (cur === o.trackId ? null : o.trackId))}
-                  className="w-full flex items-center justify-between py-2.5 border-b border-border/50 last:border-b-0 text-left cursor-pointer"
-                >
-                  <span className="text-13 text-text-primary">{o.actionName}</span>
-                  <span className="flex items-center gap-3 text-13 font-mono">
-                    <span className="text-text-muted">Stage {o.stage}</span>
-                    <span className={`flex items-center gap-1 ${colorClass}`}>
-                      <Icon size={13} /> {o.trend}
+                <div key={o.trackId} className="border-b border-border/50 last:border-b-0">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTrackId((cur) => (cur === o.trackId ? null : o.trackId))}
+                    className="w-full flex items-center justify-between py-2.5 text-left cursor-pointer"
+                  >
+                    <span className="text-13 text-text-primary">{o.actionName}</span>
+                    <span className="flex items-center gap-3 text-13 font-mono">
+                      <span className="text-text-muted">Stage {o.stage}</span>
+                      <span className={`flex items-center gap-1 ${colorClass}`}>
+                        <Icon size={13} /> {o.trend}
+                      </span>
                     </span>
-                  </span>
-                </button>
+                  </button>
+                  {expanded && (
+                    <p className="text-11 text-text-faint pb-2">
+                      Last occurrence: {o.lastOccurrenceAt ? new Date(o.lastOccurrenceAt).toLocaleString() : 'unknown'}
+                    </p>
+                  )}
+                </div>
               );
             })}
-            {expandedTrackId && (
-              <p className="text-11 text-text-faint mt-2">
-                Last occurrence: {(() => {
-                  const track = brief.repeatOffences.find((o) => o.trackId === expandedTrackId);
-                  return track?.lastOccurrenceAt ? new Date(track.lastOccurrenceAt).toLocaleString() : 'unknown';
-                })()}
-              </p>
-            )}
           </div>
         )}
       </Section>
