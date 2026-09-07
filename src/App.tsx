@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase, getUserRole, testSupabaseConnection, fetchProfileCoachId } from './lib/supabase';
 import { UserRole } from './types';
 import { PlayerId, CoachId, asPlayerId } from './types/ids';
 import AuthScreen from './components/AuthScreen';
+import ResetPasswordScreen from './components/ResetPasswordScreen';
 import PlayerShell from './components/PlayerShell';
 import CoachShell from './components/CoachShell';
 import { Shield, Clock3 } from 'lucide-react';
@@ -11,6 +12,44 @@ console.log('ENV CHECK', {
   url: import.meta.env.VITE_SUPABASE_URL,
   keyPrefix: import.meta.env.VITE_SUPABASE_ANON_KEY?.slice(0, 12)
 });
+
+// Captured synchronously at module load, before the supabase client's async
+// URL-detection strips the fragment. A Supabase recovery email redirects to
+// `<site>/#access_token=…&type=recovery`; an expired/used link redirects to
+// `<site>/#error=access_denied&error_code=otp_expired&error_description=…`.
+const INITIAL_HASH = typeof window !== 'undefined' ? window.location.hash : '';
+
+function readRecoveryHash(hash: string): { isRecovery: boolean; error: string | null } {
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  if (params.get('error') || params.get('error_code')) {
+    const desc = params.get('error_description');
+    return {
+      isRecovery: true,
+      error: desc ? decodeURIComponent(desc.replace(/\+/g, ' ')) : 'This reset link is invalid or has expired.',
+    };
+  }
+  return { isRecovery: params.get('type') === 'recovery', error: null };
+}
+
+const RECOVERY_HASH = readRecoveryHash(INITIAL_HASH);
+
+// Survive a refresh mid-flow: the supabase client strips the token fragment
+// from the URL as soon as it parses it, so without this a reload during the
+// "set a new password" step would drop the user into the app on the still-live
+// recovery token instead of back onto ResetPasswordScreen.
+const RECOVERY_FLAG_KEY = 'pg_password_recovery';
+function readRecoveryFlag(): boolean {
+  try { return sessionStorage.getItem(RECOVERY_FLAG_KEY) === '1'; } catch { return false; }
+}
+function setRecoveryFlag(on: boolean): void {
+  try {
+    if (on) sessionStorage.setItem(RECOVERY_FLAG_KEY, '1');
+    else sessionStorage.removeItem(RECOVERY_FLAG_KEY);
+  } catch { /* sessionStorage unavailable — non-fatal */ }
+}
+if (RECOVERY_HASH.isRecovery) setRecoveryFlag(true);
+
+const RECOVERY_ACTIVE = RECOVERY_HASH.isRecovery || readRecoveryFlag();
 
 export default function App() {
   const [session, setSession] = useState<{ userId: PlayerId; email: string; role: UserRole } | null>(null);
@@ -21,6 +60,30 @@ export default function App() {
   // self-registered player legitimately has none of until a coach claims
   // them (see CoachShell's "Unclaimed Players" panel).
   const [playerCoachId, setPlayerCoachId] = useState<CoachId | null | undefined>(undefined);
+  // Password-recovery mode: the user arrived via a Supabase recovery link, so
+  // we show ResetPasswordScreen instead of routing into the app — even though
+  // a (short-lived) auth session now exists.
+  const [recoveryMode, setRecoveryMode] = useState<boolean>(RECOVERY_ACTIVE);
+  const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  // The onAuthStateChange listener is registered once and closes over the
+  // initial recoveryMode value; this ref lets it see the current one.
+  const recoveryModeRef = useRef<boolean>(RECOVERY_ACTIVE);
+
+  const enterRecoveryMode = (email: string | null) => {
+    recoveryModeRef.current = true;
+    setRecoveryFlag(true);
+    setRecoveryMode(true);
+    setRecoveryEmail(email);
+  };
+
+  const exitRecoveryMode = (notice: string | null) => {
+    recoveryModeRef.current = false;
+    setRecoveryFlag(false);
+    setRecoveryMode(false);
+    setRecoveryEmail(null);
+    setAuthNotice(notice);
+  };
 
   useEffect(() => {
     if (!session || session.role !== 'PLAYER') {
@@ -46,7 +109,7 @@ export default function App() {
       try {
         const { data: { session: sbSession } } = await supabase.auth.getSession();
 
-        if (sbSession?.user) {
+        if (sbSession?.user && !recoveryModeRef.current) {
           const email = sbSession.user.email || '';
           const userId = asPlayerId(sbSession.user.id);
           const role = await getUserRole(userId, email);
@@ -55,6 +118,8 @@ export default function App() {
             email,
             role,
           });
+        } else if (sbSession?.user && recoveryModeRef.current) {
+          setRecoveryEmail(sbSession.user.email || null);
         }
       } catch (err) {
         console.error('Error during auth initialization:', err);
@@ -67,6 +132,19 @@ export default function App() {
 
     // Set up auth event listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, sbSession) => {
+      // Recovery link detected: stay on ResetPasswordScreen, don't route in.
+      if (event === 'PASSWORD_RECOVERY') {
+        enterRecoveryMode(sbSession?.user?.email || null);
+        return;
+      }
+      // While the recovery flow is open, ignore the transient sessions
+      // (INITIAL_SESSION, USER_UPDATED) that would otherwise route the user
+      // into the app on a recovery token before they've set a new password.
+      if (recoveryModeRef.current && event !== 'SIGNED_OUT') {
+        if (sbSession?.user) setRecoveryEmail(sbSession.user.email || null);
+        return;
+      }
+
       if (sbSession?.user) {
         const email = sbSession.user.email || '';
         const userId = asPlayerId(sbSession.user.id);
@@ -124,9 +202,26 @@ export default function App() {
     );
   }
 
+  // Password-recovery link — set a new password before anything else.
+  if (recoveryMode) {
+    return (
+      <ResetPasswordScreen
+        email={recoveryEmail}
+        initialError={RECOVERY_HASH.error}
+        onComplete={exitRecoveryMode}
+      />
+    );
+  }
+
   // Handle unauthenticated state
   if (!session) {
-    return <AuthScreen onAuthSuccess={handleAuthSuccess} />;
+    return (
+      <AuthScreen
+        onAuthSuccess={handleAuthSuccess}
+        notice={authNotice}
+        onNoticeDismiss={() => setAuthNotice(null)}
+      />
+    );
   }
 
   // Handle authenticated routing to the correct Lens

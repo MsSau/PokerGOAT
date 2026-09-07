@@ -3,21 +3,49 @@ import { supabase, getUserRole, registerPlayer, registerCoach } from '../lib/sup
 import { getErrorMessage } from '../lib/utils';
 import { UserRole } from '../types';
 import { PlayerId, asPlayerId } from '../types/ids';
-import { Shield, User, Lock, ArrowRight, AlertCircle, UserPlus, LogIn, Award } from 'lucide-react';
+import { Shield, User, Lock, ArrowRight, AlertCircle, UserPlus, LogIn, Award, CheckCircle2 } from 'lucide-react';
 
 interface AuthScreenProps {
   onAuthSuccess: (session: { userId: PlayerId; email: string; role: UserRole }) => void;
+  // One-shot banner shown above the form (e.g. after a password reset).
+  notice?: string | null;
+  onNoticeDismiss?: () => void;
 }
 
 type Mode = 'signin' | 'register';
 
-export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
+export default function AuthScreen({ onAuthSuccess, notice, onNoticeDismiss }: AuthScreenProps) {
   const [mode, setMode] = useState<Mode>('signin');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // "Forgot password?" — sends a Supabase recovery email that redirects back
+  // to this origin, where App.tsx routes it to ResetPasswordScreen.
+  const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [resetMsg, setResetMsg] = useState<string | null>(null);
+
+  const handleForgotPassword = async () => {
+    if (!email) {
+      setResetMsg('Enter your email address above, then click “Forgot password?” again.');
+      return;
+    }
+    setResetState('sending');
+    setResetMsg(null);
+    try {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+      if (resetError) throw resetError;
+      setResetState('sent');
+      setResetMsg(`If an account exists for ${email}, a password reset link is on its way. Check your inbox.`);
+    } catch (err) {
+      setResetState('idle');
+      setResetMsg(getErrorMessage(err, 'Could not send a reset link right now. Try again shortly.'));
+    }
+  };
 
   // Pre-seeded credentials for user testing convenience
   const testAccounts = [
@@ -104,6 +132,22 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             Build your edge. Protect your bankroll. Master your process.
           </p>
         </div>
+
+        {notice && (
+          <div className="flex items-start gap-2 text-signal-process bg-signal-process/10 p-3 rounded-[4px] border border-signal-process/25">
+            <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
+            <p className="text-12 text-left leading-relaxed flex-1">{notice}</p>
+            {onNoticeDismiss && (
+              <button
+                type="button"
+                onClick={onNoticeDismiss}
+                className="text-11 text-text-faint hover:text-text-muted shrink-0"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Sign In / Register toggle */}
         <div className="grid grid-cols-2 gap-2 bg-surface-raised p-1 rounded-[6px] border border-border">
@@ -209,6 +253,25 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
                   <AlertCircle size={16} className="mt-0.5 shrink-0" />
                   <p className="text-12 text-left leading-relaxed">{error}</p>
                 </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={resetState === 'sending'}
+                className="self-end text-11 text-accent-steel hover:underline disabled:opacity-50 disabled:no-underline"
+              >
+                {resetState === 'sending' ? 'Sending reset link…' : 'Forgot password?'}
+              </button>
+
+              {resetMsg && (
+                <p
+                  className={`text-11 leading-relaxed ${
+                    resetState === 'sent' ? 'text-signal-process' : 'text-text-muted'
+                  }`}
+                >
+                  {resetMsg}
+                </p>
               )}
 
               <button
